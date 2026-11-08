@@ -212,7 +212,7 @@ Spreminjajoče zahteve zahtevajo glavo `X-CSRF-Token` z vrednostjo iz odgovora p
 - Kandidate normalizira in poveže z lokalnimi izvajalci ter naslovi. Združi ponovitve, izloči izhodišča in vrne največ 20 predlogov; lokalne skladbe so označene, zunanje pa se ob uporabi prenesejo.
 - Uvrstitev je vsota Last.fm podobnosti čez vsa izhodišča; pri izenačenju ima prednost kandidat, ki se pojavi pri več izhodiščih.
 - Ob predvajanju se samodejno ustvari radio: na začetku zadnje samodejne skladbe se pridobi novih 5 priporočil na podlagi zadnjih 5 samodejnih skladb. Samodejni del čakalne vrste se po 100 skladbah ponovno začne.
-- Ročno dodane skladbe se vstavijo takoj za trenutno skladbo oziroma za že čakajoče ročne skladbe, pred samodejne predloge. Ob ročnem dodajanju se priporočila osvežijo glede na trenutno in ročno izbrane skladbe.
+- Ročno dodane skladbe se vstavijo takoj za trenutno skladbo oziroma za že čakajoče ročne skladbe, pred samodejne predloge. Ob ročnem dodajanju se priporočila osvežijo glede na trenutno in ročno izbrane skladbe. V razširjenem predvajalniku so **Now playing**, **Your queue** in **Recommended** ločeni; ko samodejna skladba postane trenutna, se prestavi v Now playing in seznam Recommended se skrajša.
 - Zunanje skladbe se prenesejo prek obstoječega uvoznega delavca; za tovrstna opravila je vsiljeno LLM samodejno potrjevanje. Če Last.fm ni dosegljiv ali ključ ni nastavljen, predvajanje, iskanje in seznami delujejo naprej.
 - V pogledu **Discover** je mogoče zunanje predloge prenesti in dodati v čakalno vrsto, pri shranjevanju seznama pa se vse skladbe prenesejo, dodajo v nov osebni seznam in nato v čakalno vrsto.
 ## Nalaganje glasbe (F2)

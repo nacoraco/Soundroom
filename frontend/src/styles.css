@@ -2968,15 +2968,64 @@ tbody tr:hover {
   color: var(--cream);
 }
 
-.player-queue-list {
+.player-queue-body {
   flex: 1 1 auto;
-  list-style: none;
-  margin: 0;
   min-height: 0;
   overflow-y: auto;
-  padding: 0;
   scrollbar-color: rgba(223, 187, 123, 0.4) transparent;
   scrollbar-width: thin;
+}
+
+.player-queue-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.player-queue-section {
+  padding-top: 0.4rem;
+}
+
+.player-queue-now {
+  padding-top: 0;
+}
+
+.player-queue-section-label {
+  color: #74867a;
+  display: block;
+  font-size: 0.5rem;
+  letter-spacing: 0.12em;
+  padding: 0.35rem 0.35rem 0.15rem;
+  text-transform: uppercase;
+}
+
+.player-queue-recommended {
+  border-top: 1px solid rgba(247, 241, 229, 0.16);
+  margin-top: 0.55rem;
+  padding-top: 0;
+}
+
+.player-queue-divider {
+  align-items: center;
+  color: var(--brass-light);
+  display: flex;
+  font-size: 0.52rem;
+  gap: 0.6rem;
+  letter-spacing: 0.1em;
+  padding: 0.6rem 0.35rem 0.25rem;
+  text-transform: uppercase;
+}
+
+.player-queue-divider::after {
+  background: rgba(223, 187, 123, 0.25);
+  content: "";
+  flex: 1;
+  height: 1px;
+}
+
+.player-queue-divider-count {
+  color: #819489;
+  font-size: 0.5rem;
 }
 
 .player-queue-item {

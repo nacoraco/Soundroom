@@ -157,7 +157,7 @@ export function DiscoverPage() {
         </div>
         <div className="page-aside">
           <span className="eyebrow">Method</span>
-          <span>Last.fm similarity · local catalog only</span>
+          <span>Last.fm similarity · local + external</span>
         </div>
       </header>
 
@@ -267,8 +267,8 @@ export function DiscoverPage() {
             </div>
             <span className="mono muted">
               {recommendations.length > 0
-                ? `${recommendations.length} / 20`
-                : "Local only"}
+                ? `${recommendations.filter((item) => item.local_track).length} local · ${recommendations.filter((item) => !item.local_track).length} external`
+                : "No results yet"}
             </span>
           </div>
 
@@ -289,8 +289,9 @@ export function DiscoverPage() {
 
           {seeds.length > 0 && (
             <p className="discover-note">
-              Searching against the local archive. Last.fm is used only for
-              similarity metadata; its availability never affects playback.
+              Recommendations include local recordings and external tracks
+              that can be downloaded. Last.fm availability never affects
+              playback.
             </p>
           )}
 
@@ -318,12 +319,11 @@ export function DiscoverPage() {
 
           {discoverMutation.data && recommendations.length === 0 && (
             <div className="discover-empty discover-empty-result">
-              <span className="eyebrow">No local matches</span>
-              <h2>Nothing adjacent found in the archive.</h2>
+              <span className="eyebrow">No similar tracks</span>
+              <h2>Last.fm returned nothing adjacent.</h2>
               <p>
-                Try different seeds, or search the library for a recording you
-                want to listen to. Recommendations are only downloaded when
-                you queue or save them.
+                Try different seeds. If this persists, Last.fm may have no
+                similarity data for the selected track or artist.
               </p>
               <Link className="button button-quiet" to="/library">
                 Go to search

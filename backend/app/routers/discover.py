@@ -15,6 +15,7 @@ from ..recommendations import (
     LastfmClient,
     LastfmError,
     SeedReference,
+    SimilarTrack,
     build_recommendations,
     clean_seed_metadata,
 )
@@ -60,6 +61,53 @@ def _recommendation_out(recommendation) -> DiscoverRecommendation:
         seed_count=recommendation.seed_count,
     )
 
+
+def _similar_tracks_for_seed(
+    client: LastfmClient,
+    artist: str,
+    title: str,
+) -> list[SimilarTrack]:
+    tracks = client.get_similar(artist, title, limit=SIMILAR_LIMIT)
+    if tracks:
+        return tracks
+
+    fallback: list[SimilarTrack] = []
+    similar_artists = client.get_similar_artists(artist, limit=5)
+    for similar_artist in similar_artists:
+        top_tracks = client.get_artist_top_tracks(
+            similar_artist.name,
+            limit=5,
+        )
+        for index, track in enumerate(top_tracks):
+            match = max(
+                0.1,
+                similar_artist.match * (1.0 - index * 0.12),
+            )
+            fallback.append(
+                SimilarTrack(
+                    title=track.title,
+                    artist=track.artist,
+                    match=match,
+                )
+            )
+            if len(fallback) >= SIMILAR_LIMIT:
+                break
+        if len(fallback) >= SIMILAR_LIMIT:
+            break
+
+    if not fallback:
+        for index, track in enumerate(
+            client.get_artist_top_tracks(artist, limit=10)
+        ):
+            fallback.append(
+                SimilarTrack(
+                    title=track.title,
+                    artist=track.artist,
+                    match=max(0.1, 0.6 - index * 0.04),
+                )
+            )
+
+    return fallback[:SIMILAR_LIMIT]
 
 def get_lastfm_client(
     settings: Settings = Depends(get_settings),
@@ -137,7 +185,7 @@ def discover_similar(
             similar_by_seed.append(
                 (
                     seed_ref,
-                    client.get_similar(artist, title, limit=SIMILAR_LIMIT),
+                    _similar_tracks_for_seed(client, artist, title),
                 )
             )
     except LastfmError as exc:
@@ -178,10 +226,10 @@ def discover_radio(
             similar_by_seed.append(
                 (
                     seed_ref,
-                    client.get_similar(
+                    _similar_tracks_for_seed(
+                        client,
                         seed_ref.artist,
                         seed_ref.title,
-                        limit=SIMILAR_LIMIT,
                     ),
                 )
             )

@@ -1,4 +1,4 @@
-﻿from uuid import UUID, uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -11,6 +11,7 @@ from app.recommendations import (
     LastfmClient,
     LastfmError,
     SeedReference,
+    SimilarArtist,
     SimilarTrack,
     build_recommendations,
     clean_seed_metadata,
@@ -66,13 +67,23 @@ def seed_track(
 
 
 class FakeLastfm:
-    def __init__(self, responses):
+    def __init__(self, responses, similar_artists=None, top_tracks=None):
         self.responses = responses
+        self.similar_artists = similar_artists or {}
+        self.top_tracks = top_tracks or {}
         self.calls = []
 
     def get_similar(self, artist: str, title: str, limit: int = 20):
         self.calls.append((artist, title, limit))
         return self.responses.get((artist, title), [])
+
+    def get_similar_artists(self, artist: str, limit: int = 5):
+        self.calls.append(("artists", artist, limit))
+        return self.similar_artists.get(artist, [])
+
+    def get_artist_top_tracks(self, artist: str, limit: int = 5):
+        self.calls.append(("tracks", artist, limit))
+        return self.top_tracks.get(artist, [])
 
 
 def override_lastfm(client: TestClient, fake: FakeLastfm):
@@ -350,6 +361,44 @@ def test_radio_rejects_more_than_five_seeds(client: TestClient):
 
     assert response.status_code == 422
 
+
+def test_discover_falls_back_to_similar_artists_when_track_has_no_similarity(
+    client: TestClient, db_session
+):
+    headers = admin_headers(client)
+    seed = seed_track(
+        db_session,
+        "S.A.R.S. - Veruj mi (Official video)",
+        "S.A.R.S.",
+    )
+    fake = FakeLastfm(
+        {},
+        similar_artists={"S.A.R.S.": [SimilarArtist("Dubioza Kolektiv", 1.0)]},
+        top_tracks={
+            "Dubioza Kolektiv": [
+                SimilarTrack("Perspektiva", "Dubioza Kolektiv", 1.0),
+                SimilarTrack("Buđav Lebac", "Dubioza Kolektiv", 1.0),
+            ]
+        },
+    )
+    override_lastfm(client, fake)
+    try:
+        response = client.post(
+            "/api/discover/similar",
+            json={"seed_track_ids": [str(seed.id)]},
+            headers=headers,
+        )
+    finally:
+        clear_override(client)
+
+    assert response.status_code == 200
+    recommendations = response.json()["recommendations"]
+    assert [item["title"] for item in recommendations] == [
+        "Perspektiva",
+        "Buđav Lebac",
+    ]
+    assert all(item["local_track"] is None for item in recommendations)
+    assert recommendations[0]["score"] == 1.0
 
 def test_discover_rejects_fourth_seed(client: TestClient, db_session):
     headers = admin_headers(client)

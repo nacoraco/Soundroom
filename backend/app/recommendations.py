@@ -25,6 +25,12 @@ class SimilarTrack:
 
 
 @dataclass(frozen=True)
+class SimilarArtist:
+    name: str
+    match: float
+
+
+@dataclass(frozen=True)
 class SeedReference:
     title: str
     artist: str
@@ -72,23 +78,15 @@ class LastfmClient:
     def __exit__(self, *args: object) -> None:
         self.close()
 
-    def get_similar(
-        self,
-        artist: str,
-        title: str,
-        limit: int = SIMILAR_LIMIT,
-    ) -> list[SimilarTrack]:
-        params = {
-            "method": "track.getsimilar",
-            "artist": artist,
-            "track": title,
+    def _request(self, method: str, params: dict) -> dict:
+        query = {
+            "method": method,
             "api_key": self.api_key,
             "format": "json",
-            "limit": max(1, min(limit, SIMILAR_LIMIT)),
-            "autocorrect": 1,
+            **params,
         }
         try:
-            response = self._client.get(self.base_url, params=params)
+            response = self._client.get(self.base_url, params=query)
         except httpx.HTTPError as exc:
             raise LastfmError("Last.fm is unavailable.") from exc
 
@@ -100,9 +98,28 @@ class LastfmClient:
         except ValueError as exc:
             raise LastfmError("Last.fm returned invalid data.") from exc
 
-        if isinstance(payload, dict) and payload.get("error"):
+        if not isinstance(payload, dict):
+            raise LastfmError("Last.fm returned invalid data.")
+        if payload.get("error"):
             message = payload.get("message") or "Last.fm returned an error."
             raise LastfmError(str(message))
+        return payload
+
+    def get_similar(
+        self,
+        artist: str,
+        title: str,
+        limit: int = SIMILAR_LIMIT,
+    ) -> list[SimilarTrack]:
+        payload = self._request(
+            "track.getsimilar",
+            {
+                "artist": artist,
+                "track": title,
+                "limit": max(1, min(limit, SIMILAR_LIMIT)),
+                "autocorrect": 1,
+            },
+        )
 
         container = (
             payload.get("similartracks", {})
@@ -141,6 +158,94 @@ class LastfmClient:
                     title=name.strip(),
                     artist=artist_name.strip(),
                     match=max(0.0, min(match, 1.0)),
+                )
+            )
+        return results
+
+
+    def get_similar_artists(
+        self,
+        artist: str,
+        limit: int = 5,
+    ) -> list[SimilarArtist]:
+        payload = self._request(
+            "artist.getsimilar",
+            {
+                "artist": artist,
+                "limit": max(1, min(limit, 20)),
+                "autocorrect": 1,
+            },
+        )
+        container = payload.get("similarartists", {})
+        raw_artists = (
+            container.get("artist", [])
+            if isinstance(container, dict)
+            else []
+        )
+        if isinstance(raw_artists, dict):
+            raw_artists = [raw_artists]
+
+        results: list[SimilarArtist] = []
+        for item in raw_artists[:limit]:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            try:
+                match = float(item.get("match") or 0)
+            except (TypeError, ValueError):
+                match = 0.0
+            results.append(
+                SimilarArtist(
+                    name=name.strip(),
+                    match=max(0.0, min(match, 1.0)),
+                )
+            )
+        return results
+
+    def get_artist_top_tracks(
+        self,
+        artist: str,
+        limit: int = 5,
+    ) -> list[SimilarTrack]:
+        payload = self._request(
+            "artist.gettoptracks",
+            {
+                "artist": artist,
+                "limit": max(1, min(limit, 20)),
+                "autocorrect": 1,
+            },
+        )
+        container = payload.get("toptracks", {})
+        raw_tracks = (
+            container.get("track", [])
+            if isinstance(container, dict)
+            else []
+        )
+        if isinstance(raw_tracks, dict):
+            raw_tracks = [raw_tracks]
+
+        results: list[SimilarTrack] = []
+        for item in raw_tracks[:limit]:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            artist_data = item.get("artist")
+            artist_name = (
+                artist_data.get("name")
+                if isinstance(artist_data, dict)
+                else artist_data
+            ) or artist
+            if not isinstance(name, str) or not name.strip():
+                continue
+            if not isinstance(artist_name, str) or not artist_name.strip():
+                continue
+            results.append(
+                SimilarTrack(
+                    title=name.strip(),
+                    artist=artist_name.strip(),
+                    match=1.0,
                 )
             )
         return results

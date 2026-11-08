@@ -2,7 +2,10 @@
 
 Soundroom je spletna aplikacija za poslušanje osebne glasbene knjižnice. Uporabnikom omogoča iskanje in pretakanje skladb, sestavljanje seznamov predvajanja ter odkrivanje podobne glasbe, skrbnikom pa uvoz datotek in upravljanje uporabnikov ter nastavitev. Odjemalec je odzivna spletna aplikacija, ki jo je v telefonu z Androidom mogoče namestiti kot progresivno spletno aplikacijo (PWA).
 
-Projekt je v fazi priprave repozitorija: `frontend/` in `backend/` za zdaj ne vsebujeta izvorne kode. Načrt, obseg in arhitektura so opisani v dokumentaciji.
+## Stanje implementacije
+
+- **F1 – Prijava, odjava in vloge uporabnikov:** implementirano (prijava, seja, CSRF zaščita, odjava, skrbniško upravljanje uporabnikov).
+- **F2–F7:** v načrtu; naloge in napredek so na [GitHub Projectu Soundroom MVP](https://github.com/users/nacoraco/projects/5).
 
 ## Dokumentacija
 
@@ -20,12 +23,12 @@ Projekt je v fazi priprave repozitorija: `frontend/` in `backend/` za zdaj ne vs
 
 | Področje | Tehnologije |
 |---|---|
-| Frontend | React, TypeScript, Vite, `vite-plugin-pwa`, `@tanstack/react-query`, `react-router`, `react-hook-form`, `zod` |
+| Frontend | React, TypeScript, Vite, `@tanstack/react-query`, `react-router`, `react-hook-form`, `zod`; PWA v F5 |
 | Backend | Python 3.12+, FastAPI, Pydantic 2, Uvicorn |
 | Podatkovna baza | PostgreSQL, SQLAlchemy 2, Alembic |
-| Avtentikacija | Argon2id, sejni piškotek `HttpOnly`, strežniško preverjanje vlog |
-| Glasba in uvoz | Trajna shramba datotek, `yt-dlp`, FFmpeg/ffprobe, pretakanje HTTP Range |
-| Priporočila | Last.fm API (`track.getSimilar`) |
+| Avtentikacija | Argon2id, sejni piškotek `HttpOnly`, strežniško preverjanje vlog, CSRF žeton |
+| Glasba in uvoz | Trajna shramba datotek, `yt-dlp`, FFmpeg/ffprobe, pretakanje HTTP Range (F2–F5) |
+| Priporočila | Last.fm API (`track.getSimilar`, F7) |
 | Lokalni razvoj | Docker Compose, `.env`, `pytest` |
 
 ## Struktura repozitorija
@@ -33,32 +36,102 @@ Projekt je v fazi priprave repozitorija: `frontend/` in `backend/` za zdaj ne vs
 ```text
 .
 ├── README.md
-├── .gitignore
-├── frontend/          # spletni odjemalec (še brez kode)
-├── backend/           # REST API in delavec za uvoz (še brez kode)
+├── docker-compose.yml
+├── .env.example
+├── frontend/              # React + TypeScript + Vite
+│   ├── src/
+│   └── package.json
+├── backend/               # FastAPI, SQLAlchemy in Alembic
+│   ├── app/
+│   ├── alembic/
+│   └── tests/
 └── docs/
-    ├── 01-zasnova-resitve.md
-    ├── 02-funkcionalnosti-in-obseg.md
-    ├── 03-podatkovni-model.md
-    ├── 04-arhitektura-in-tehnoloski-sklad.md
-    ├── 05-uporabniske-zgodbe.md
-    ├── 06-wireframes.md
+    ├── 01–06-*.md
     ├── wireframes/
-    │   ├── WF-01-sign-in.png
-    │   ├── ...
-    │   └── WF-08-mobile-player.png
     └── adr/
-        ├── adr-template.md
-        └── 0001–0009-*.md
 ```
+
+## Lokalni zagon
+
+### Docker Compose
+
+1. Kopirajte vzorčno konfiguracijo in jo prilagodite:
+
+   ```powershell
+   Copy-Item .env.example .env
+   ```
+
+   Pred prvim zagonom obvezno spremenite vsaj `APP_SECRET_KEY`, `POSTGRES_PASSWORD` in `INITIAL_ADMIN_PASSWORD`.
+
+2. Zaženite storitve:
+
+   ```powershell
+   docker compose up --build
+   ```
+
+3. Odprite:
+   - uporabniški vmesnik: <http://localhost:5173>
+   - dokumentacija API-ja: <http://localhost:8000/docs>
+   - zdravstvena točka: <http://localhost:8000/api/health>
+
+4. Prijavite se z računom iz `.env` (`INITIAL_ADMIN_EMAIL` in `INITIAL_ADMIN_PASSWORD`). Skrbnik lahko nato na strani **Users** ustvari račune za poslušalce in urednike.
+
+Zaustavitev: `docker compose down`. Podatki v PostgreSQL ostanejo v volumnu `pgdata`; z `docker compose down -v` jih izbrišete.
+
+### Brez Dockerja
+
+Za zaledni sistem potrebujete PostgreSQL in Python 3.12+:
+
+```powershell
+cd backend
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements-dev.txt
+$env:DATABASE_URL = "postgresql+psycopg://soundroom:soundroom@localhost:5432/soundroom"
+alembic upgrade head
+python -m app.seed
+uvicorn app.main:app --reload
+```
+
+Za uporabniški vmesnik:
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+Vite privzeto posreduje `/api` na `http://localhost:8000`; drug cilj nastavite z `VITE_PROXY_TARGET`.
+
+## Testi in preverjanje
+
+```powershell
+cd backend
+.venv\Scripts\python.exe -m pytest
+
+cd ..\frontend
+npm run build
+```
+
+## API (F1)
+
+| Metoda | Pot | Namen |
+|---|---|---|
+| `POST` | `/api/auth/login` | Prijava in ustvarjanje seje |
+| `GET` | `/api/auth/me` | Trenutni uporabnik in CSRF žeton |
+| `POST` | `/api/auth/logout` | Preklic seje in odjava |
+| `GET` | `/api/admin/users` | Seznam uporabnikov (skrbnik) |
+| `POST` | `/api/admin/users` | Ustvarjanje poslušalca ali urednika (skrbnik) |
+| `PATCH` | `/api/admin/users/{id}` | Sprememba vloge ali aktivnosti (skrbnik) |
+| `GET` | `/api/health` | Stanje API-ja in baze |
+
+Spreminjajoče zahteve zahtevajo glavo `X-CSRF-Token` z vrednostjo iz odgovora prijave oziroma `GET /api/auth/me`.
 
 ## Razvojni proces
 
 Projekt uporablja strategijo **GitHub Flow**:
 
-1. Za vsako spremembo se ustvari kratkotrajna veja z opisnim imenom (npr. `feature/player-queue`).
+1. Za vsako funkcionalnost se ustvari kratkotrajna veja z opisnim imenom (npr. `feature/f1-auth`).
 2. Spremembe se objavijo v veji in združijo v `main` izključno prek pull requesta.
 3. Veja `main` je zaščitena: neposredni pushi, prisilno prepisovanje zgodovine in brisanje veje niso dovoljeni.
 4. Pomembne arhitekturne odločitve se dokumentirajo kot nov ADR; sprememba obstoječe odločitve se zabeleži z novim ADR-jem, ki navede, katero odločitev nadomešča.
-
-Lokalni zagon bo opisan tukaj, ko bosta pripravljena prva različica zalednega sistema in uporabniškega vmesnika; predvideni koraki so v razdelku [Lokalni zagon](docs/04-arhitektura-in-tehnoloski-sklad.md#lokalni-zagon).

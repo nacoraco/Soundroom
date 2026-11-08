@@ -462,6 +462,12 @@ export function LibraryPage() {
           </p>
         </section>
       )}
+
+      {showResults && isSearching && page === 1 && (
+        <section className="panel external-results">
+          <ImportRequest query={query} hasLocalResults />
+        </section>
+      )}
     </section>
   );
 }

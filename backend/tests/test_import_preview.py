@@ -241,3 +241,32 @@ def test_selected_import_skips_search_and_llm(
     assert track.title == "Test Song"
     assert track.source_url == "https://www.youtube.com/watch?v=abcdefghijk"
     assert (tmp_path / track.file_path).is_file()
+
+
+def test_selected_imports_dedupe_by_candidate_not_only_query(client: TestClient):
+    headers = admin_headers(client)
+    enable_import(client, headers)
+
+    def create(video_id: str):
+        response = client.post(
+            "/api/import-jobs",
+            json={
+                "query": "Shared query",
+                "candidate": {
+                    "video_id": video_id,
+                    "title": f"Selected {video_id}",
+                    "artist": "Test Artist",
+                    "duration_seconds": 120,
+                },
+            },
+            headers=headers,
+        )
+        assert response.status_code == 200
+        return response.json()
+
+    first = create("abcdefghijk")
+    second = create("lmnopqrstuv")
+    first_again = create("abcdefghijk")
+
+    assert first["id"] != second["id"]
+    assert first_again["id"] == first["id"]

@@ -27,6 +27,7 @@ export function PlayerBar() {
     setExpanded,
     clearQueue,
     dismissError,
+    queuedImports,
   } = usePlayer();
 
   if (!currentTrack) {
@@ -37,6 +38,7 @@ export function PlayerBar() {
   const duration = state.duration || currentTrack.duration_seconds || 0;
   const position = Math.min(state.currentTime, duration);
   const canNext = state.currentIndex < state.queue.length - 1;
+  const queueCount = state.queue.length + queuedImports.length;
   const error = state.importError ?? state.error;
   const status = state.importError
     ? "Import failed"
@@ -161,7 +163,7 @@ export function PlayerBar() {
           title="Queue"
         >
           <QueueIcon size={17} />
-          <span>{state.queue.length}</span>
+          <span>{queueCount}</span>
         </button>
         <button
           type="button"

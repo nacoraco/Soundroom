@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+﻿import { useQuery } from "@tanstack/react-query";
 
 import { getImportConfig, previewImportCandidates } from "../api";
 import { usePlayer } from "../player";
@@ -26,8 +26,14 @@ function formatViews(count: number | null): string | null {
   return `${count} views`;
 }
 
-export function ImportRequest({ query }: { query: string }) {
-  const { startImport } = usePlayer();
+export function ImportRequest({
+  query,
+  hasLocalResults = false,
+}: {
+  query: string;
+  hasLocalResults?: boolean;
+}) {
+  const { startImport, queueImport, queuedImports } = usePlayer();
   const configQuery = useQuery({
     queryKey: ["import-config"],
     queryFn: getImportConfig,
@@ -43,7 +49,8 @@ export function ImportRequest({ query }: { query: string }) {
 
   const config = configQuery.data;
   const preview = previewQuery.data;
-  const maxMinutes = config?.max_track_minutes ?? preview?.max_track_minutes ?? 15;
+  const maxMinutes =
+    config?.max_track_minutes ?? preview?.max_track_minutes ?? 15;
   const hasEligibleCandidate = Boolean(
     preview?.candidates.some((candidate) => candidate.within_duration_limit),
   );
@@ -89,14 +96,25 @@ export function ImportRequest({ query }: { query: string }) {
   return (
     <div className="import-request" aria-live="polite">
       <div className="import-request-head">
-        <span className="eyebrow">Missing recording</span>
+        <span className="eyebrow">
+          {hasLocalResults
+            ? "External releases / YouTube"
+            : "Missing recording"}
+        </span>
       </div>
 
-      <p>
-        No local match. Press Play on the exact external release. The full
-        player opens at 0:00 and starts automatically when the download is
-        ready.
-      </p>
+      {hasLocalResults ? (
+        <p>
+          Local matches are above. Preview other versions from YouTube, or
+          queue one to download in the background.
+        </p>
+      ) : (
+        <p>
+          No local match. Press Play on the exact external release. The full
+          player opens at 0:00 and starts automatically when the download is
+          ready; Queue downloads it in the background.
+        </p>
+      )}
 
       {previewQuery.isLoading && (
         <div className="import-preview-state">
@@ -140,6 +158,14 @@ export function ImportRequest({ query }: { query: string }) {
           <ul className="import-candidates" aria-label="External releases">
             {preview.candidates.map((candidate, index) => {
               const views = formatViews(candidate.view_count);
+              const queueEntry = queuedImports.find(
+                (entry) => entry.videoId === candidate.video_id,
+              );
+              const queueActive = Boolean(
+                queueEntry &&
+                  queueEntry.status !== "failed" &&
+                  queueEntry.status !== "cancelled",
+              );
               return (
                 <li className="import-candidate-row" key={candidate.video_id}>
                   <div
@@ -178,15 +204,30 @@ export function ImportRequest({ query }: { query: string }) {
                       </span>
                     </span>
                     {candidate.within_duration_limit ? (
-                      <button
-                        type="button"
-                        className="import-candidate-play"
-                        onClick={() => void startImport(query, candidate)}
-                        aria-label={`Play ${candidate.title}`}
-                      >
-                        <PlayIcon size={13} />
-                        Play
-                      </button>
+                      <span className="import-candidate-actions">
+                        <button
+                          type="button"
+                          className="import-candidate-play"
+                          onClick={() => void startImport(query, candidate)}
+                          aria-label={`Play ${candidate.title}`}
+                        >
+                          <PlayIcon size={13} />
+                          Play
+                        </button>
+                        <button
+                          type="button"
+                          className="import-candidate-queue"
+                          onClick={() => void queueImport(query, candidate)}
+                          disabled={queueActive}
+                          aria-label={`Queue ${candidate.title}`}
+                        >
+                          {queueEntry
+                            ? queueEntry.error
+                              ? "Retry queue"
+                              : "Queueing…"
+                            : "+ Queue"}
+                        </button>
+                      </span>
                     ) : (
                       <span className="import-candidate-state mono">
                         {candidate.duration_seconds === null
@@ -209,7 +250,8 @@ export function ImportRequest({ query }: { query: string }) {
           </ul>
 
           <p className="import-preview-note mono">
-            Max {maxMinutes} min · opens the player and starts when ready
+            Max {maxMinutes} min · Play opens the player · Queue downloads in
+            the background
           </p>
 
           {!hasEligibleCandidate && (

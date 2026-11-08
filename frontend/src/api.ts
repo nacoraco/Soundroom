@@ -2,10 +2,12 @@ import type {
   AppSettings,
   AppSettingsUpdateInput,
   AuthResponse,
+  ImportCandidateSelectionInput,
   ImportConfig,
   ImportJob,
   ImportJobStatus,
   ImportJobUpdateInput,
+  ImportPreview,
   Track,
   TrackPage,
   User,
@@ -159,11 +161,19 @@ export async function listTracks({
   return request<TrackPage>(`/api/tracks${query ? `?${query}` : ""}`);
 }
 
+export async function getTrack(id: string): Promise<Track> {
+  return request<Track>(`/api/tracks/${id}`);
+}
+
 export async function uploadTrack(formData: FormData): Promise<Track> {
   return request<Track>("/api/tracks", {
     method: "POST",
     body: formData,
   });
+}
+
+export async function deleteTrack(id: string): Promise<void> {
+  return request<void>(`/api/tracks/${id}`, { method: "DELETE" });
 }
 
 export async function getAppSettings(): Promise<AppSettings> {
@@ -183,10 +193,21 @@ export async function getImportConfig(): Promise<ImportConfig> {
   return request<ImportConfig>("/api/import-jobs/config");
 }
 
-export async function createImportJob(query: string): Promise<ImportJob> {
+export async function previewImportCandidates(
+  query: string,
+): Promise<ImportPreview> {
+  return request<ImportPreview>(
+    `/api/import-jobs/preview?q=${encodeURIComponent(query)}`,
+  );
+}
+
+export async function createImportJob(
+  query: string,
+  candidate?: ImportCandidateSelectionInput,
+): Promise<ImportJob> {
   return request<ImportJob>("/api/import-jobs", {
     method: "POST",
-    body: JSON.stringify({ query }),
+    body: JSON.stringify({ query, candidate }),
   });
 }
 

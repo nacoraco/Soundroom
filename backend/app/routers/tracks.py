@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import (
     APIRouter,
@@ -11,9 +11,11 @@ from fastapi import (
     Form,
     HTTPException,
     Query,
+    Request,
     UploadFile,
     status,
 )
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
@@ -25,6 +27,7 @@ from ..metadata import InvalidMp3Error, read_mp3_metadata
 from ..models import Album, Artist, Track, TrackSource, UserRole
 from ..schemas import TrackOut, TrackPage
 from ..storage import EmptyUpload, UploadTooLarge, save_upload_to_temp
+from ..streaming import InvalidRange, parse_range_header
 from ..text import normalize_text
 
 router = APIRouter(prefix="/api/tracks", tags=["tracks"])
@@ -32,6 +35,19 @@ router = APIRouter(prefix="/api/tracks", tags=["tracks"])
 PAGE_SIZE = 20
 MIN_SEARCH_LENGTH = 3
 MAX_SEARCH_LENGTH = 200
+STREAM_CHUNK_SIZE = 64 * 1024
+
+
+def _iter_file(path: Path, start: int, length: int):
+    with path.open("rb") as file:
+        file.seek(start)
+        remaining = length
+        while remaining > 0:
+            chunk = file.read(min(STREAM_CHUNK_SIZE, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+            yield chunk
 
 
 def _empty_page(page: int) -> TrackPage:
@@ -120,6 +136,136 @@ def list_tracks(
         total=total,
         total_pages=(total + PAGE_SIZE - 1) // PAGE_SIZE,
     )
+
+
+@router.get("/{track_id}", response_model=TrackOut)
+def get_track(
+    track_id: UUID,
+    _: AuthContext = Depends(get_current_auth),
+    db: Session = Depends(get_db),
+) -> TrackOut:
+    track = db.scalar(
+        select(Track)
+        .options(joinedload(Track.artist), joinedload(Track.album))
+        .where(Track.id == track_id, Track.is_available.is_(True))
+    )
+    if track is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Track not found",
+        )
+    return _track_out(track, track.artist, track.album)
+
+
+@router.get("/{track_id}/stream")
+def stream_track(
+    track_id: UUID,
+    request: Request,
+    _: AuthContext = Depends(get_current_auth),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> StreamingResponse:
+    track = db.get(Track, track_id)
+    if track is None or not track.is_available:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Track not found",
+        )
+
+    media_root = Path(settings.media_storage_path).resolve()
+    file_path = (media_root / track.file_path).resolve()
+    if not file_path.is_relative_to(media_root) or not file_path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Track file not found",
+        )
+
+    file_size = file_path.stat().st_size
+    if file_size == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Track file not found",
+        )
+
+    range_header = request.headers.get("range")
+    try:
+        byte_range = (
+            parse_range_header(range_header, file_size)
+            if range_header is not None
+            else None
+        )
+    except InvalidRange as exc:
+        raise HTTPException(
+            status_code=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
+            detail="Range not satisfiable",
+            headers={
+                "Accept-Ranges": "bytes",
+                "Content-Range": f"bytes */{file_size}",
+            },
+        ) from exc
+
+    if byte_range is None:
+        start = 0
+        end = file_size - 1
+        response_status = status.HTTP_200_OK
+    else:
+        start = byte_range.start
+        end = byte_range.end
+        response_status = status.HTTP_206_PARTIAL_CONTENT
+
+    length = end - start + 1
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "private, max-age=0, must-revalidate",
+        "Content-Length": str(length),
+        "Content-Disposition": "inline",
+        "ETag": f'"{track.audio_sha256}"',
+        "X-Content-Type-Options": "nosniff",
+    }
+    if byte_range is not None:
+        headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+
+    return StreamingResponse(
+        _iter_file(file_path, start, length),
+        status_code=response_status,
+        headers=headers,
+        media_type=track.mime_type,
+    )
+
+
+@router.delete("/{track_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_track(
+    track_id: UUID,
+    _: AuthContext = Depends(require_roles(UserRole.admin)),
+    __: AuthContext = Depends(require_csrf),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> Response:
+    track = db.get(Track, track_id)
+    if track is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Track not found",
+        )
+
+    media_root = Path(settings.media_storage_path).resolve()
+    file_path = (media_root / track.file_path).resolve()
+    if not file_path.is_relative_to(media_root):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Track file not found",
+        )
+    if file_path.exists():
+        if not file_path.is_file():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Track file not found",
+            )
+        file_path.unlink()
+
+    db.delete(track)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("", response_model=TrackOut, status_code=status.HTTP_201_CREATED)

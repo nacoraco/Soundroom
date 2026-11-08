@@ -81,6 +81,31 @@ export interface ImportConfig {
   max_track_minutes: number;
 }
 
+export interface ImportPreviewCandidate {
+  video_id: string;
+  url: string;
+  title: string;
+  artist: string;
+  uploader: string | null;
+  duration_seconds: number | null;
+  view_count: number | null;
+  thumbnail_url: string | null;
+  within_duration_limit: boolean;
+}
+
+export interface ImportPreview {
+  query: string;
+  max_track_minutes: number;
+  candidates: ImportPreviewCandidate[];
+}
+
+export interface ImportCandidateSelectionInput {
+  video_id: string;
+  title: string;
+  artist: string;
+  duration_seconds: number;
+}
+
 export interface AppSettings {
   auto_rip_on_miss: boolean;
   llm_auto_approve: boolean;

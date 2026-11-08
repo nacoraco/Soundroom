@@ -114,10 +114,10 @@ export function AdminSettingsPage() {
                 <span className="toggle-copy">
                   <strong>Laya auto-review</strong>
                   <span>
-                    Ask the local Laya model to choose the highest-probability
-                    version when the deterministic match is ambiguous. The
-                    choice is accepted automatically; only a failed model call
-                    falls back to review.
+                    Only for automatic imports without a chosen release: ask
+                    the local Laya model to choose the highest-probability
+                    version when the deterministic match is ambiguous. Search
+                    imports selected in the library never use Laya.
                   </span>
                 </span>
                 <span className="switch">
@@ -127,7 +127,7 @@ export function AdminSettingsPage() {
                     onChange={(event) =>
                       setLlmAutoApprove(event.target.checked)
                     }
-                    aria-label="Use Laya for ambiguous imports"
+                    aria-label="Use Laya for automatic imports"
                   />
                   <span className="switch-track" aria-hidden="true" />
                 </span>
@@ -176,9 +176,10 @@ export function AdminSettingsPage() {
             </p>
             {llmAutoApprove && autoRip && (
               <p>
-                Ambiguous candidates are sent to Laya. The option with the
-                highest probability is accepted automatically; if the model
-                call fails, the job stays in the editorial queue.
+                Automatic imports without a selected release are sent to
+                Laya. Search imports where the user chooses a release bypass
+                Laya entirely; if a model call fails, the job stays in the
+                editorial queue.
               </p>
             )}
             <p className="mono muted">

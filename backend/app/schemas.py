@@ -108,8 +108,28 @@ class AppSettingsUpdate(BaseModel):
     max_track_minutes: int = Field(ge=1, le=1440)
 
 
+class ImportCandidateSelection(BaseModel):
+    video_id: str = Field(
+        min_length=11,
+        max_length=11,
+        pattern=r"^[A-Za-z0-9_-]{11}$",
+    )
+    title: str = Field(min_length=1, max_length=300)
+    artist: str = Field(min_length=1, max_length=200)
+    duration_seconds: int = Field(ge=1, le=86400)
+
+    @field_validator("title", "artist")
+    @classmethod
+    def strip_selection_value(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Value cannot be empty")
+        return value
+
+
 class ImportJobCreate(BaseModel):
     query: str = Field(min_length=3, max_length=300)
+    candidate: ImportCandidateSelection | None = None
 
     @field_validator("query")
     @classmethod
@@ -118,6 +138,24 @@ class ImportJobCreate(BaseModel):
         if len(value) < 3:
             raise ValueError("Enter at least 3 characters")
         return value
+
+
+class ImportPreviewCandidate(BaseModel):
+    video_id: str
+    url: str
+    title: str
+    artist: str
+    uploader: str | None
+    duration_seconds: int | None
+    view_count: int | None
+    thumbnail_url: str | None
+    within_duration_limit: bool
+
+
+class ImportPreview(BaseModel):
+    query: str
+    max_track_minutes: int
+    candidates: list[ImportPreviewCandidate]
 
 
 class ImportJobConfig(BaseModel):

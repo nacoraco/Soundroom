@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
+import re
 import shutil
 import subprocess
 import tempfile
@@ -10,6 +11,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -46,6 +48,7 @@ VERSION_MARKERS = (
     "bbc",
     "session",
 )
+VIDEO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
 
 @dataclass(frozen=True)
@@ -56,41 +59,91 @@ class Candidate:
     duration_seconds: int | None
     uploader: str | None = None
     view_count: int | None = None
+    video_id: str | None = None
+    thumbnail_url: str | None = None
+
+
+def _candidate_video_id(entry: dict) -> str | None:
+    video_id = entry.get("id")
+    if isinstance(video_id, str) and VIDEO_ID_PATTERN.fullmatch(video_id):
+        return video_id
+
+    url = entry.get("webpage_url") or entry.get("url")
+    if not isinstance(url, str):
+        return None
+    parsed = urlparse(url)
+    candidate = (
+        parse_qs(parsed.query).get("v", [None])[0]
+        if parsed.hostname not in {"youtu.be", "www.youtu.be"}
+        else parsed.path.strip("/").split("/")[0]
+    )
+    if isinstance(candidate, str) and VIDEO_ID_PATTERN.fullmatch(candidate):
+        return candidate
+    return None
 
 
 def _candidate_url(entry: dict) -> str | None:
+    video_id = _candidate_video_id(entry)
+    if video_id:
+        return f"https://www.youtube.com/watch?v={video_id}"
     url = entry.get("webpage_url") or entry.get("url")
-    if not url:
-        video_id = entry.get("id")
-        if video_id:
-            url = f"https://www.youtube.com/watch?v={video_id}"
-    return url
+    return str(url) if url else None
 
 
-def search_candidates(query: str) -> list[Candidate]:
+def _candidate_artist(title: str, entry: dict) -> str | None:
+    artist = entry.get("artist") or entry.get("creator")
+    if artist:
+        return str(artist)
+
+    if " - " in title:
+        prefix = title.split(" - ", 1)[0].strip()
+        if 1 <= len(prefix) <= 120:
+            return prefix
+
+    channel = entry.get("channel") or entry.get("uploader")
+    return str(channel) if channel else None
+
+
+def _candidate_thumbnail(entry: dict) -> str | None:
+    thumbnail = entry.get("thumbnail")
+    if not thumbnail:
+        thumbnails = entry.get("thumbnails") or []
+        candidates = [
+            item
+            for item in thumbnails
+            if isinstance(item, dict) and isinstance(item.get("url"), str)
+        ]
+        if candidates:
+            thumbnail = max(
+                candidates,
+                key=lambda item: item.get("width") or item.get("height") or 0,
+            ).get("url")
+    if isinstance(thumbnail, str) and thumbnail.startswith("https://"):
+        return thumbnail
+    return None
+
+
+def search_candidates(query: str, limit: int = 5) -> list[Candidate]:
     import yt_dlp
 
+    limit = max(1, min(limit, 10))
     options = {
         "quiet": True,
         "no_warnings": True,
         "extract_flat": True,
         "skip_download": True,
         "noplaylist": True,
+        "socket_timeout": 15,
     }
     with yt_dlp.YoutubeDL(options) as ydl:
-        info = ydl.extract_info(f"ytsearch5:{query}", download=False)
+        info = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
 
     entries = list(info.get("entries") or []) if info else []
     candidates: list[Candidate] = []
-    for entry in entries[:5]:
+    for entry in entries[:limit]:
         url = _candidate_url(entry)
-        title = entry.get("track") or entry.get("title") or ""
-        artist = (
-            entry.get("artist")
-            or entry.get("creator")
-            or entry.get("uploader")
-            or entry.get("channel")
-        )
+        title = str(entry.get("track") or entry.get("title") or "")
+        artist = _candidate_artist(title, entry)
         duration = entry.get("duration")
         uploader = entry.get("channel") or entry.get("uploader")
         view_count = entry.get("view_count")
@@ -104,6 +157,8 @@ def search_candidates(query: str) -> list[Candidate]:
                 duration_seconds=int(duration) if duration is not None else None,
                 uploader=str(uploader) if uploader else None,
                 view_count=int(view_count) if view_count is not None else None,
+                video_id=_candidate_video_id(entry),
+                thumbnail_url=_candidate_thumbnail(entry),
             )
         )
     return candidates
@@ -147,12 +202,13 @@ def _match_score(query: str, candidate: Candidate) -> float:
 def rank_candidates(
     query: str,
     candidates: list[Candidate],
-    max_seconds: int,
+    max_seconds: int | None,
 ) -> list[tuple[float, Candidate]]:
     eligible = [
         candidate
         for candidate in candidates
-        if candidate.duration_seconds is None
+        if max_seconds is None
+        or candidate.duration_seconds is None
         or candidate.duration_seconds <= max_seconds
     ]
     return sorted(

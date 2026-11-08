@@ -41,5 +41,37 @@ def seed_initial_admin(db: Session | None = None) -> None:
             db.close()
 
 
+def seed_initial_listener(db: Session | None = None) -> None:
+    settings = get_settings()
+    email = settings.initial_listener_email.strip().lower()
+    if not email:
+        return
+
+    owns_session = db is None
+    if db is None:
+        db = SessionLocal()
+
+    try:
+        user = db.scalar(select(User).where(User.email == email))
+        if user is not None:
+            print("Initial listener already exists; nothing to do.")
+            return
+
+        user = User(
+            email=email,
+            display_name=settings.initial_listener_display_name,
+            password_hash=hash_password(settings.initial_listener_password),
+            role=UserRole.listener,
+            is_active=True,
+        )
+        db.add(user)
+        db.commit()
+        print(f"Created initial listener {email}.")
+    finally:
+        if owns_session:
+            db.close()
+
+
 if __name__ == "__main__":
     seed_initial_admin()
+    seed_initial_listener()

@@ -41,3 +41,11 @@ export interface Track {
   is_available: boolean;
   created_at: string;
 }
+
+export interface TrackPage {
+  items: Track[];
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
+}

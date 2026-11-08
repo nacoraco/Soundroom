@@ -7,6 +7,9 @@ os.environ["COOKIE_SECURE"] = "false"
 os.environ["INITIAL_ADMIN_EMAIL"] = "admin@example.com"
 os.environ["INITIAL_ADMIN_PASSWORD"] = "admin-password"
 os.environ["INITIAL_ADMIN_DISPLAY_NAME"] = "Administrator"
+os.environ["INITIAL_LISTENER_EMAIL"] = "listener@example.com"
+os.environ["INITIAL_LISTENER_PASSWORD"] = "listener-password"
+os.environ["INITIAL_LISTENER_DISPLAY_NAME"] = "Listener"
 os.environ["SESSION_TTL_HOURS"] = "24"
 
 import pytest

@@ -1,6 +1,7 @@
 import type {
   AuthResponse,
   Track,
+  TrackPage,
   User,
   UserCreateInput,
   UserUpdateInput,
@@ -134,8 +135,22 @@ export async function updateUser(
   });
 }
 
-export async function listTracks(): Promise<Track[]> {
-  return request<Track[]>("/api/tracks");
+export async function listTracks({
+  q,
+  page = 1,
+}: {
+  q?: string;
+  page?: number;
+} = {}): Promise<TrackPage> {
+  const params = new URLSearchParams();
+  if (q) {
+    params.set("q", q);
+  }
+  if (page > 1) {
+    params.set("page", String(page));
+  }
+  const query = params.toString();
+  return request<TrackPage>(`/api/tracks${query ? `?${query}` : ""}`);
 }
 
 export async function uploadTrack(formData: FormData): Promise<Track> {

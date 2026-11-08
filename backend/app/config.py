@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     initial_admin_email: str = "admin@example.com"
     initial_admin_password: str = "change-me-now"
     initial_admin_display_name: str = "Administrator"
+    initial_listener_email: str = "listener@example.com"
+    initial_listener_password: str = "listener-password"
+    initial_listener_display_name: str = "Listener"
     max_upload_mb: int = 50
     media_storage_path: str = "./data/audio"
 

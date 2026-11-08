@@ -3403,3 +3403,51 @@ tbody tr:hover {
   max-width: 40rem;
   padding: 0.55rem 0.7rem;
 }
+
+@media (min-width: 961px) {
+  .player-expanded {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    height: 100dvh;
+    overflow: hidden;
+  }
+
+  .player-expanded-grid {
+    height: 100%;
+    max-height: 100%;
+    min-height: 0;
+    overflow: hidden;
+    padding: clamp(0.6rem, 1.4vh, 1.1rem) 0;
+  }
+
+  .player-art {
+    max-width: min(22rem, 30vh);
+    width: min(100%, 22rem);
+  }
+
+  .player-track-copy {
+    margin-top: clamp(0.6rem, 1.4vh, 1rem);
+  }
+
+  .player-track-copy h2 {
+    font-size: clamp(2.1rem, min(4.2vw, 5.2vh), 3.7rem);
+    margin-bottom: 0.45rem;
+    margin-top: 0.25rem;
+  }
+
+  .player-expanded-scrub {
+    margin-top: clamp(0.5rem, 1.2vh, 0.9rem);
+  }
+
+  .player-expanded-controls {
+    margin-top: clamp(0.25rem, 0.8vh, 0.6rem);
+  }
+
+  .player-expanded-tools {
+    margin-top: clamp(0.4rem, 1vh, 0.8rem);
+  }
+
+  .player-queue {
+    max-height: 100%;
+  }
+}

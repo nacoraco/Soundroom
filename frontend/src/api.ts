@@ -1,5 +1,6 @@
 import type {
   AuthResponse,
+  Track,
   User,
   UserCreateInput,
   UserUpdateInput,
@@ -7,13 +8,38 @@ import type {
 
 let csrfToken: string | null = null;
 
+export interface ApiErrorDetail {
+  code?: string;
+  message?: string;
+  missing?: string[];
+  metadata?: {
+    title?: string | null;
+    artist?: string | null;
+    album?: string | null;
+    release_year?: number | null;
+    duration_seconds?: number;
+  };
+  [key: string]: unknown;
+}
+
 export class ApiError extends Error {
   status: number;
+  detail: unknown;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, detail: unknown) {
+    const message =
+      typeof detail === "string"
+        ? detail
+        : detail !== null &&
+            typeof detail === "object" &&
+            "message" in detail &&
+            typeof (detail as { message?: unknown }).message === "string"
+          ? (detail as { message: string }).message
+          : "Request failed";
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.detail = detail;
   }
 }
 
@@ -43,7 +69,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
 
   const data = (await response.json().catch(() => null)) as {
-    detail?: string;
+    detail?: unknown;
   } | null;
 
   if (!response.ok) {
@@ -105,5 +131,16 @@ export async function updateUser(
   return request<User>(`/api/admin/users/${id}`, {
     method: "PATCH",
     body: JSON.stringify(input),
+  });
+}
+
+export async function listTracks(): Promise<Track[]> {
+  return request<Track[]>("/api/tracks");
+}
+
+export async function uploadTrack(formData: FormData): Promise<Track> {
+  return request<Track>("/api/tracks", {
+    method: "POST",
+    body: formData,
   });
 }

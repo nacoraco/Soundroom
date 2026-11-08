@@ -21,6 +21,7 @@ export function AppLayout() {
   const logoutMutation = useLogout();
   const navigate = useNavigate();
   const user = data?.user;
+  const canEdit = user?.role === "editor" || user?.role === "admin";
 
   async function handleLogout() {
     try {
@@ -44,9 +45,15 @@ export function AppLayout() {
             <span className="nav-index">01</span>
             Library
           </NavLink>
+          {canEdit && (
+            <NavLink to="/upload">
+              <span className="nav-index">02</span>
+              Upload
+            </NavLink>
+          )}
           {user?.role === "admin" && (
             <NavLink to="/admin/users">
-              <span className="nav-index">02</span>
+              <span className="nav-index">03</span>
               People
             </NavLink>
           )}

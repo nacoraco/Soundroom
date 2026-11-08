@@ -3,7 +3,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
-from .models import UserRole
+from .models import TrackSource, UserRole
 
 
 class UserOut(BaseModel):
@@ -70,3 +70,16 @@ class UserUpdate(BaseModel):
         if value is UserRole.admin:
             raise ValueError("Admin role cannot be assigned")
         return value
+
+
+class TrackOut(BaseModel):
+    id: UUID
+    title: str
+    artist_name: str
+    album_title: str | None
+    release_year: int | None
+    duration_seconds: int
+    mime_type: str
+    source_type: TrackSource
+    is_available: bool
+    created_at: datetime

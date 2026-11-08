@@ -1,0 +1,232 @@
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from uuid import uuid4
+
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    UploadFile,
+    status,
+)
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session, joinedload
+
+from ..config import Settings, get_settings
+from ..db import get_db
+from ..deps import AuthContext, get_current_auth, require_csrf, require_roles
+from ..metadata import InvalidMp3Error, read_mp3_metadata
+from ..models import Album, Artist, Track, TrackSource, UserRole
+from ..schemas import TrackOut
+from ..storage import EmptyUpload, UploadTooLarge, save_upload_to_temp
+from ..text import normalize_text
+
+router = APIRouter(prefix="/api/tracks", tags=["tracks"])
+
+
+def _track_out(track: Track, artist: Artist, album: Album | None) -> TrackOut:
+    return TrackOut(
+        id=track.id,
+        title=track.title,
+        artist_name=artist.name,
+        album_title=album.title if album is not None else None,
+        release_year=album.release_year if album is not None else None,
+        duration_seconds=track.duration_seconds,
+        mime_type=track.mime_type,
+        source_type=track.source_type,
+        is_available=track.is_available,
+        created_at=track.created_at,
+    )
+
+
+@router.get("", response_model=list[TrackOut])
+def list_tracks(
+    _: AuthContext = Depends(get_current_auth),
+    db: Session = Depends(get_db),
+) -> list[TrackOut]:
+    tracks = db.scalars(
+        select(Track)
+        .options(joinedload(Track.artist), joinedload(Track.album))
+        .where(Track.is_available.is_(True))
+        .order_by(Track.created_at.desc(), Track.title.asc())
+        .limit(50)
+    ).all()
+    return [_track_out(track, track.artist, track.album) for track in tracks]
+
+
+@router.post("", response_model=TrackOut, status_code=status.HTTP_201_CREATED)
+async def upload_track(
+    file: UploadFile = File(...),
+    title: str | None = Form(default=None),
+    artist: str | None = Form(default=None),
+    album: str | None = Form(default=None),
+    release_year: int | None = Form(default=None),
+    _: AuthContext = Depends(require_roles(UserRole.editor, UserRole.admin)),
+    __: AuthContext = Depends(require_csrf),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> TrackOut:
+    if not file.filename or Path(file.filename).suffix.lower() != ".mp3":
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Only MP3 files are accepted.",
+        )
+
+    title = (title or "").strip() or None
+    artist = (artist or "").strip() or None
+    album = (album or "").strip() or None
+    if release_year is not None and not 1900 <= release_year <= 2100:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Release year must be between 1900 and 2100.",
+        )
+
+    try:
+        temp_path, sha256, _size = await save_upload_to_temp(file, settings)
+    except UploadTooLarge as exc:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=(
+                "File is too large. "
+                f"Maximum allowed size is {settings.max_upload_mb} MB."
+            ),
+        ) from exc
+    except EmptyUpload as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="The uploaded file is empty.",
+        ) from exc
+
+    try:
+        try:
+            metadata = read_mp3_metadata(temp_path)
+        except InvalidMp3Error as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            ) from exc
+
+        final_title = title or metadata.title
+        final_artist = artist or metadata.artist
+        final_album = album or metadata.album
+        final_year = release_year if release_year is not None else metadata.release_year
+
+        missing = [
+            name
+            for name, value in (("title", final_title), ("artist", final_artist))
+            if not value
+        ]
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "code": "missing_metadata",
+                    "message": (
+                        "The file is missing title or artist metadata. "
+                        "Enter the missing details and upload again."
+                    ),
+                    "missing": missing,
+                    "metadata": {
+                        "title": metadata.title,
+                        "artist": metadata.artist,
+                        "album": metadata.album,
+                        "release_year": metadata.release_year,
+                        "duration_seconds": metadata.duration_seconds,
+                    },
+                },
+            )
+
+        normalized_artist = normalize_text(final_artist or "")
+        normalized_title = normalize_text(final_title or "")
+        if not normalized_artist:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Artist is required.",
+            )
+        if not normalized_title:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Title is required.",
+            )
+
+        if (
+            db.scalar(select(Track.id).where(Track.audio_sha256 == sha256))
+            is not None
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This recording is already in the library.",
+            )
+
+        artist_obj = db.scalar(
+            select(Artist).where(Artist.normalized_name == normalized_artist)
+        )
+        if artist_obj is None:
+            artist_obj = Artist(
+                name=final_artist,
+                normalized_name=normalized_artist,
+            )
+            db.add(artist_obj)
+            db.flush()
+
+        album_obj: Album | None = None
+        if final_album:
+            album_obj = db.scalar(
+                select(Album).where(
+                    Album.artist_id == artist_obj.id,
+                    func.lower(Album.title) == final_album.casefold(),
+                )
+            )
+            if album_obj is None:
+                album_obj = Album(
+                    artist_id=artist_obj.id,
+                    title=final_album,
+                    release_year=final_year,
+                )
+                db.add(album_obj)
+                db.flush()
+            elif final_year is not None and album_obj.release_year is None:
+                album_obj.release_year = final_year
+
+        relative_path = f"tracks/{uuid4().hex}.mp3"
+        final_path = Path(settings.media_storage_path) / relative_path
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(temp_path, final_path)
+
+        track = Track(
+            artist_id=artist_obj.id,
+            album_id=album_obj.id if album_obj is not None else None,
+            title=final_title,
+            normalized_title=normalized_title,
+            duration_seconds=metadata.duration_seconds,
+            file_path=relative_path,
+            mime_type="audio/mpeg",
+            source_type=TrackSource.upload,
+            audio_sha256=sha256,
+            is_available=True,
+        )
+
+        try:
+            db.add(track)
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            final_path.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This recording is already in the library.",
+            ) from exc
+        except Exception:
+            db.rollback()
+            final_path.unlink(missing_ok=True)
+            raise
+
+        db.refresh(track)
+        return _track_out(track, artist_obj, album_obj)
+    finally:
+        temp_path.unlink(missing_ok=True)

@@ -26,3 +26,18 @@ export interface UserUpdateInput {
   role?: "listener" | "editor";
   is_active?: boolean;
 }
+
+export type TrackSource = "upload" | "youtube";
+
+export interface Track {
+  id: string;
+  title: string;
+  artist_name: string;
+  album_title: string | null;
+  release_year: number | null;
+  duration_seconds: number;
+  mime_type: string;
+  source_type: TrackSource;
+  is_available: boolean;
+  created_at: string;
+}

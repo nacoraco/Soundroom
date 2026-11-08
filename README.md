@@ -174,7 +174,7 @@ Spreminjajoče zahteve zahtevajo glavo `X-CSRF-Token` z vrednostjo iz odgovora p
 - Skrbnik na strani **Settings** upravlja `auto_rip_on_miss`, `max_track_minutes` in neobvezni `llm_auto_approve`. Privzeto je uvoz izklopljen, največja dolžina pa 15 minut; LLM samodejno potrjevanje je privzeto izklopljeno.
 - Iskanje vedno prikaže predogled zunanjih izdaj pod lokalnimi zadetki, ko je uvoz omogočen. Uporabnik izbere natančno izdajo prek **Play** ali **Queue**; ta pot ne uporablja LLM. `llm_auto_approve` ostaja za opravila, ustvarjena brez izbrane izdaje (na primer prek API-ja).
 - Nastavitev velja za nova opravila; že ustvarjena opravila se ne prekličejo. Poslušalci in uredniki nastavitev ne morejo spreminjati.
-- Deterministični razvrščevalnik samodejno sprejme jasnega zmagovalca (ujemanje naslova/izvajalca, uradni kanal, razlika pred drugim kandidatom).
+- Deterministični razvrščevalnik samodejno sprejme jasnega zmagovalca (ujemanje naslova/izvajalca, uradni kanal, razlika pred drugim kandidatom). Žive, koncertne in nastopne različice so vedno uvrščene za vsemi studijskimi kandidati, ne glede na skladbo, izvajalca ali priljubljenost; če obstaja vsaj ena studijska različica, LLM nikoli ne izbere žive.
 - Če je izbira nejasna in je vklopljen `llm_auto_approve`, delavec pošlje največ pet kandidatov lokalnemu modelu **Laya** prek Ollame. Laya je odločitveni model, zato ga kličemo prek Ollaminega `/v1/systemone` z izbiro med oštevilčenimi kandidati; vrne izbrano številko in verjetnosti. Izbere kandidata z najvišjo verjetnostjo; prag je privzeto 0. Če klic modela ne uspe, opravilo ostane v uredniškem pregledu.
 - Ollama je vključena v Docker Compose, model pa se ne prenaša samodejno. Po zagonu storitev ga namestite z:
   ```powershell

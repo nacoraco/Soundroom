@@ -248,3 +248,24 @@ class PlaylistDetail(BaseModel):
     created_at: datetime
     updated_at: datetime
     items: list[PlaylistItemOut]
+
+class DiscoverRequest(BaseModel):
+    seed_track_ids: list[UUID] = Field(min_length=1, max_length=3)
+
+    @field_validator("seed_track_ids")
+    @classmethod
+    def unique_seed_ids(cls, value: list[UUID]) -> list[UUID]:
+        if len(set(value)) != len(value):
+            raise ValueError("Seed tracks must be unique")
+        return value
+
+
+class DiscoverRecommendation(BaseModel):
+    track: TrackOut
+    score: float
+    seed_count: int
+
+
+class DiscoverResponse(BaseModel):
+    seeds: list[UUID]
+    recommendations: list[DiscoverRecommendation]

@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     ollama_model: str = "laya"
     ollama_timeout_seconds: int = 30
     llm_confidence_threshold: float = 0.0
+    lastfm_api_key: str = ""
+    lastfm_base_url: str = "https://ws.audioscrobbler.com/2.0/"
+    lastfm_timeout_seconds: float = 10.0
     max_upload_mb: int = 50
     media_storage_path: str = "./data/audio"
 

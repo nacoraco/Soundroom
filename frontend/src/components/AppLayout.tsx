@@ -61,27 +61,31 @@ function AppLayoutContent() {
             <span className="nav-index">02</span>
             Playlists
           </NavLink>
+          <NavLink to="/discover">
+            <span className="nav-index">03</span>
+            Discover
+          </NavLink>
           {canEdit && (
             <NavLink to="/upload">
-              <span className="nav-index">03</span>
+              <span className="nav-index">04</span>
               Upload
             </NavLink>
           )}
           {canEdit && (
             <NavLink to="/imports">
-              <span className="nav-index">04</span>
+              <span className="nav-index">05</span>
               Imports
             </NavLink>
           )}
           {user?.role === "admin" && (
             <NavLink to="/admin/users">
-              <span className="nav-index">05</span>
+              <span className="nav-index">06</span>
               People
             </NavLink>
           )}
           {user?.role === "admin" && (
             <NavLink to="/admin/settings">
-              <span className="nav-index">06</span>
+              <span className="nav-index">07</span>
               Settings
             </NavLink>
           )}

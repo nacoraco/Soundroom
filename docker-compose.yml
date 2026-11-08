@@ -33,6 +33,9 @@ services:
       INITIAL_LISTENER_DISPLAY_NAME: ${INITIAL_LISTENER_DISPLAY_NAME:-Listener}
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-50}
       MEDIA_STORAGE_PATH: /data/audio
+      LASTFM_API_KEY: ${LASTFM_API_KEY:-}
+      LASTFM_BASE_URL: ${LASTFM_BASE_URL:-https://ws.audioscrobbler.com/2.0/}
+      LASTFM_TIMEOUT_SECONDS: ${LASTFM_TIMEOUT_SECONDS:-10}
     command: >
       sh -c "alembic upgrade head &&
              python -m app.seed &&

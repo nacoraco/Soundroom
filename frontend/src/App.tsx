@@ -5,6 +5,7 @@ import { AdminRoute, EditorRoute, ProtectedRoute } from "./auth";
 import { AppLayout } from "./components/AppLayout";
 import { AdminSettingsPage } from "./pages/AdminSettingsPage";
 import { AdminUsersPage } from "./pages/AdminUsersPage";
+import { DiscoverPage } from "./pages/DiscoverPage";
 import { ImportJobsPage } from "./pages/ImportJobsPage";
 import { LibraryPage } from "./pages/LibraryPage";
 import { PlaylistDetailPage } from "./pages/PlaylistDetailPage";
@@ -32,6 +33,7 @@ export default function App() {
               <Route path="/library" element={<LibraryPage />} />
               <Route path="/playlists" element={<PlaylistsPage />} />
               <Route path="/playlists/:playlistId" element={<PlaylistDetailPage />} />
+              <Route path="/discover" element={<DiscoverPage />} />
               <Route element={<EditorRoute />}>
                 <Route path="/upload" element={<UploadPage />} />
                 <Route path="/imports" element={<ImportJobsPage />} />

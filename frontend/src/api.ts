@@ -2,6 +2,7 @@ import type {
   AppSettings,
   AppSettingsUpdateInput,
   AuthResponse,
+  DiscoverResponse,
   ImportCandidateSelectionInput,
   ImportConfig,
   ImportJob,
@@ -177,6 +178,15 @@ export async function uploadTrack(formData: FormData): Promise<Track> {
 
 export async function deleteTrack(id: string): Promise<void> {
   return request<void>(`/api/tracks/${id}`, { method: "DELETE" });
+}
+
+export async function discoverSimilar(
+  seedTrackIds: string[],
+): Promise<DiscoverResponse> {
+  return request<DiscoverResponse>("/api/discover/similar", {
+    method: "POST",
+    body: JSON.stringify({ seed_track_ids: seedTrackIds }),
+  });
 }
 
 export async function listPlaylists(): Promise<PlaylistSummary[]> {

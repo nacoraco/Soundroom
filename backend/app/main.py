@@ -6,6 +6,7 @@ from .routers import (
     admin_settings,
     admin_users,
     auth,
+    discover,
     editor_imports,
     health,
     import_jobs,
@@ -32,6 +33,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_settings.router)
     app.include_router(import_jobs.router)
     app.include_router(editor_imports.router)
+    app.include_router(discover.router)
     app.include_router(playlists.router)
     app.include_router(tracks.router)
     return app

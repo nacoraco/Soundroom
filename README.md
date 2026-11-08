@@ -10,7 +10,7 @@ Soundroom je spletna aplikacija za poslušanje osebne glasbene knjižnice. Upora
 - **F4 – Samodejni uvoz ob manjkajočem zadetku:** implementirano (skrbniške nastavitve, trajna opravila uvoja, ločen delavec z `yt-dlp`/FFmpeg, stanja opravil, uredniški pregled dvoumnih zadetkov, zahteva za uvoz iz praznega iskanja in neobvezno odločanje z modelom Laya).
 - **F5 – Predvajalnik in čakalna vrsta:** implementirano (avtorizirano pretakanje HTTP Range, predvajalnik s čakalno vrsto, Media Session, mobilna vrstica, razširjen pogled in namestljiva PWA).
 - **F6 – Osebni seznami predvajanja:** implementirano (lastniški CRUD, vrstni red skladb, iskanje in dodajanje, vlečenje za prerazporejanje, predvajanje seznama).
-- **F7:** v načrtu; naloge in napredek so na [GitHub Projectu Soundroom MVP](https://github.com/users/nacoraco/projects/5).
+- **F7 – Odkrij podobno:** implementirano (Last.fm 	rack.getSimilar, ujemanje z lokalnim katalogom, do tri izhodišča, do 20 predlogov in shranjevanje kot nov seznam).
 
 ## Dokumentacija
 
@@ -128,7 +128,7 @@ npm test
 npm run build
 ```
 
-## API (F1–F6)
+## API (F1–F7)
 
 | Metoda | Pot | Namen |
 |---|---|---|
@@ -205,6 +205,14 @@ Spreminjajoče zahteve zahtevajo glavo `X-CSRF-Token` z vrednostjo iz odgovora p
 - Vmesnik **Playlists** prikaže kartice seznamov in obrazec za nov seznam. Podrobnosti omogočajo iskanje po knjižnici, dodajanje, odstranjevanje, vlečenje vrstic ter pomožna gumba za premik gor/dol.
 - Gumb **Play all** naloži celoten seznam v skupno čakalno vrsto predvajalnika; posamezno skladbo je mogoče predvajati neposredno iz seznama.
 
+## Odkrij podobno (F7)
+
+- Poslušalec izbere eno do tri skladbe iz lokalne knjižnice. Vmesnik onemogoči četrto izhodišče.
+- Za vsako izhodišče API prek Last.fm `track.getSimilar` pridobi do 20 podobnih skladb; ključ `LASTFM_API_KEY` ostane samo v okolju zalednega sistema.
+- Kandidate normalizira in poveže z lokalnimi izvajalci ter naslovi. Združi ponovitve, izloči izhodišča in vrne največ 20 skladb, ki so že v knjižnici.
+- Uvrstitev je vsota Last.fm podobnosti čez vsa izhodišča; pri izenačenju ima prednost kandidat, ki se pojavi pri več izhodiščih.
+- Priporočilo ne sproži samodejnega uvoza. Če Last.fm ni dosegljiv ali ključ ni nastavljen, prikaz priporočil javi napako, predvajanje, iskanje in seznami pa delujejo naprej.
+- Rezultate je mogoče predvajati, dodati v čakalno vrsto ali shraniti kot nov osebni seznam predvajanja.
 ## Nalaganje glasbe (F2)
 
 - V uporabniškem vmesniku je na voljo stran **Upload**, vidna urednikom in skrbnikom.

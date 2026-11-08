@@ -1,11 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 
-import { AdminRoute, ProtectedRoute } from "./auth";
+import { AdminRoute, EditorRoute, ProtectedRoute } from "./auth";
 import { AppLayout } from "./components/AppLayout";
 import { AdminUsersPage } from "./pages/AdminUsersPage";
 import { LibraryPage } from "./pages/LibraryPage";
 import { LoginPage } from "./pages/LoginPage";
+import { UploadPage } from "./pages/UploadPage";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -25,6 +26,9 @@ export default function App() {
           <Route element={<ProtectedRoute />}>
             <Route element={<AppLayout />}>
               <Route path="/library" element={<LibraryPage />} />
+              <Route element={<EditorRoute />}>
+                <Route path="/upload" element={<UploadPage />} />
+              </Route>
               <Route element={<AdminRoute />}>
                 <Route path="/admin/users" element={<AdminUsersPage />} />
               </Route>

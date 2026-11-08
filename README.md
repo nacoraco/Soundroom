@@ -5,7 +5,8 @@ Soundroom je spletna aplikacija za poslušanje osebne glasbene knjižnice. Upora
 ## Stanje implementacije
 
 - **F1 – Prijava, odjava in vloge uporabnikov:** implementirano (prijava, seja, CSRF zaščita, odjava, skrbniško upravljanje uporabnikov).
-- **F2–F7:** v načrtu; naloge in napredek so na [GitHub Projectu Soundroom MVP](https://github.com/users/nacoraco/projects/5).
+- **F2 – Uvoz glasbe v knjižnico:** implementirano (nalaganje MP3, branje ID3 metapodatkov, ročna dopolnitev, trajna shramba datotek, zaznavanje dvojnikov, seznam zadnjih dodanih skladb).
+- **F3–F7:** v načrtu; naloge in napredek so na [GitHub Projectu Soundroom MVP](https://github.com/users/nacoraco/projects/5).
 
 ## Dokumentacija
 
@@ -27,7 +28,7 @@ Soundroom je spletna aplikacija za poslušanje osebne glasbene knjižnice. Upora
 | Backend | Python 3.12+, FastAPI, Pydantic 2, Uvicorn |
 | Podatkovna baza | PostgreSQL, SQLAlchemy 2, Alembic |
 | Avtentikacija | Argon2id, sejni piškotek `HttpOnly`, strežniško preverjanje vlog, CSRF žeton |
-| Glasba in uvoz | Trajna shramba datotek, `yt-dlp`, FFmpeg/ffprobe, pretakanje HTTP Range (F2–F5) |
+| Glasba in uvoz | Trajna shramba datotek, `mutagen` za ID3 metapodatke, `yt-dlp`, FFmpeg/ffprobe, pretakanje HTTP Range (F2–F5) |
 | Priporočila | Last.fm API (`track.getSimilar`, F7) |
 | Lokalni razvoj | Docker Compose, `.env`, `pytest` |
 
@@ -74,7 +75,7 @@ Soundroom je spletna aplikacija za poslušanje osebne glasbene knjižnice. Upora
    - dokumentacija API-ja: <http://localhost:8000/docs>
    - zdravstvena točka: <http://localhost:8000/api/health>
 
-4. Prijavite se z računom iz `.env` (`INITIAL_ADMIN_EMAIL` in `INITIAL_ADMIN_PASSWORD`). Skrbnik lahko nato na strani **Users** ustvari račune za poslušalce in urednike.
+4. Prijavite se z računom iz `.env` (`INITIAL_ADMIN_EMAIL` in `INITIAL_ADMIN_PASSWORD`). Skrbnik lahko nato na strani **People** ustvari račune za poslušalce in urednike.
 
 Zaustavitev: `docker compose down`. Podatki v PostgreSQL ostanejo v volumnu `pgdata`; z `docker compose down -v` jih izbrišete.
 
@@ -113,7 +114,7 @@ cd ..\frontend
 npm run build
 ```
 
-## API (F1)
+## API (F1–F2)
 
 | Metoda | Pot | Namen |
 |---|---|---|
@@ -123,9 +124,20 @@ npm run build
 | `GET` | `/api/admin/users` | Seznam uporabnikov (skrbnik) |
 | `POST` | `/api/admin/users` | Ustvarjanje poslušalca ali urednika (skrbnik) |
 | `PATCH` | `/api/admin/users/{id}` | Sprememba vloge ali aktivnosti (skrbnik) |
+| `GET` | `/api/tracks` | Seznam razpoložljivih skladb (prijavljeni uporabniki) |
+| `POST` | `/api/tracks` | Nalaganje MP3 (urednik ali skrbnik, multipart) |
 | `GET` | `/api/health` | Stanje API-ja in baze |
 
 Spreminjajoče zahteve zahtevajo glavo `X-CSRF-Token` z vrednostjo iz odgovora prijave oziroma `GET /api/auth/me`.
+
+## Nalaganje glasbe (F2)
+
+- V uporabniškem vmesniku je na voljo stran **Upload**, vidna urednikom in skrbnikom.
+- Sprejeta je samo datoteka MP3; dejanska vsebina se preveri z `mutagen`, ne le pripona.
+- Največja velikost je določena z `MAX_UPLOAD_MB` (privzeto 50 MB). Ob prekoračitvi odgovor navede največjo dovoljeno velikost.
+- Naslov in izvajalec se prebereta iz ID3 oznak (`TIT2`, `TPE1`), album iz `TALB`, leto pa iz `TDRC` oziroma `TYER`. Če naslov ali izvajalec manjkata, obrazec zahteva ročni vnos; ista izbrana datoteka se nato pošlje še enkrat.
+- Datoteke se shranijo v `MEDIA_STORAGE_PATH/tracks/`; v bazi je relativna pot, SHA-256 vsebine pa prepreči podvojene skladbe.
+- Po uspešnem uvozu se skladba prikaže v razdelku **Recently added** v knjižnici. Iskanje in predvajanje se dodata v F3/F5.
 
 ## Razvojni proces
 

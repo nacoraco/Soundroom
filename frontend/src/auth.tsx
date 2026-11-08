@@ -67,3 +67,13 @@ export function AdminRoute() {
 
   return <Outlet />;
 }
+
+export function EditorRoute() {
+  const { data } = useAuth();
+
+  if (data?.user.role !== "editor" && data?.user.role !== "admin") {
+    return <Navigate to="/library" replace />;
+  }
+
+  return <Outlet />;
+}

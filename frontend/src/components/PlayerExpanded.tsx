@@ -1,4 +1,5 @@
 import { usePlayer } from "../player";
+import type { PlayerTrack } from "../playerState";
 import {
   artStyle,
   formatTime,
@@ -51,6 +52,71 @@ export function PlayerExpanded() {
       ? "Imported pressing"
       : "Local pressing";
 
+  const upcoming = state.queue
+    .map((track, index) => ({ track, index }))
+    .slice(state.currentIndex + 1);
+  const manualUpcoming = upcoming.filter(
+    ({ track }) => track.origin !== "auto",
+  );
+  const recommendedUpcoming = upcoming.filter(
+    ({ track }) => track.origin === "auto",
+  );
+
+  function renderQueueItem(
+    track: PlayerTrack,
+    index: number,
+    isCurrent: boolean,
+  ) {
+    return (
+      <li
+        className={`player-queue-item ${isCurrent ? "is-current" : ""}`}
+        key={track.id}
+      >
+        <button
+          type="button"
+          className="player-queue-track"
+          onClick={() => playAt(index)}
+          aria-current={isCurrent ? "true" : undefined}
+        >
+          <span className="player-queue-index mono">
+            {isCurrent ? (
+              <span className="player-queue-bars" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+              </span>
+            ) : (
+              String(index + 1).padStart(2, "0")
+            )}
+          </span>
+          <span className="player-queue-copy">
+            <strong>{track.title}</strong>
+            <span>
+              {track.pending
+                ? (track.pending_error ??
+                  importStatusLabel(track.pending_status ?? null))
+                : track.artist_name}
+            </span>
+          </span>
+          <span className="player-queue-duration mono">
+            {formatTime(track.duration_seconds)}
+          </span>
+        </button>
+        {!track.pending && (
+          <button
+            type="button"
+            className="player-queue-remove"
+            onClick={() => removeAt(index)}
+            aria-label={`Remove ${track.title} from queue`}
+            title="Remove from queue"
+          >
+            <RemoveIcon size={14} />
+          </button>
+        )}
+      </li>
+    );
+  }
+
   return (
     <div
       className="player-expanded"
@@ -100,7 +166,9 @@ export function PlayerExpanded() {
               <div className="player-art-pending-overlay">
                 <span className="eyebrow">Incoming release</span>
                 <span className="player-art-pending-status">
-                  {importStatusLabel(state.importStatus)}
+                  {importStatusLabel(
+                    currentTrack.pending_status ?? state.importStatus,
+                  )}
                 </span>
               </div>
             </div>
@@ -138,7 +206,11 @@ export function PlayerExpanded() {
             {isPending && (
               <div className="player-import-state" role="status">
                 <span className="player-loader" aria-hidden="true" />
-                <span>{importStatusLabel(state.importStatus)}</span>
+                <span>
+                  {importStatusLabel(
+                    currentTrack.pending_status ?? state.importStatus,
+                  )}
+                </span>
               </div>
             )}
           </div>
@@ -241,10 +313,12 @@ export function PlayerExpanded() {
             </span>
           </div>
 
-          {(state.importError || state.error) && (
+          {(currentTrack.pending_error || state.importError || state.error) && (
             <div className="player-expanded-error" role="alert">
-              <span>{state.importError ?? state.error}</span>
-              {state.importError && (
+              <span>
+                {currentTrack.pending_error ?? state.importError ?? state.error}
+              </span>
+              {(currentTrack.pending_error || state.importError) && (
                 <button
                   type="button"
                   className="button button-quiet button-small"
@@ -278,54 +352,49 @@ export function PlayerExpanded() {
               The queue is empty. Add a recording from the library.
             </p>
           ) : (
-            <ol className="player-queue-list">
-              {state.queue.map((track, index) => {
-                const isCurrent = index === state.currentIndex;
-                return (
-                  <li
-                    className={`player-queue-item ${isCurrent ? "is-current" : ""}`}
-                    key={track.id}
-                  >
-                    <button
-                      type="button"
-                      className="player-queue-track"
-                      onClick={() => playAt(index)}
-                      aria-current={isCurrent ? "true" : undefined}
-                    >
-                      <span className="player-queue-index mono">
-                        {isCurrent ? (
-                          <span className="player-queue-bars" aria-hidden="true">
-                            <span />
-                            <span />
-                            <span />
-                          </span>
-                        ) : (
-                          String(index + 1).padStart(2, "0")
-                        )}
-                      </span>
-                      <span className="player-queue-copy">
-                        <strong>{track.title}</strong>
-                        <span>{track.artist_name}</span>
-                      </span>
-                      <span className="player-queue-duration mono">
-                        {formatTime(track.duration_seconds)}
-                      </span>
-                    </button>
-                    {!track.pending && (
-                      <button
-                        type="button"
-                        className="player-queue-remove"
-                        onClick={() => removeAt(index)}
-                        aria-label={`Remove ${track.title} from queue`}
-                        title="Remove from queue"
-                      >
-                        <RemoveIcon size={14} />
-                      </button>
+            <div className="player-queue-body">
+              <section className="player-queue-section player-queue-now">
+                <span className="player-queue-section-label mono">
+                  Now playing
+                </span>
+                <ol className="player-queue-list">
+                  {renderQueueItem(
+                    currentTrack,
+                    state.currentIndex,
+                    true,
+                  )}
+                </ol>
+              </section>
+
+              {manualUpcoming.length > 0 && (
+                <section className="player-queue-section">
+                  <span className="player-queue-section-label mono">
+                    Your queue
+                  </span>
+                  <ol className="player-queue-list">
+                    {manualUpcoming.map(({ track, index }) =>
+                      renderQueueItem(track, index, false),
                     )}
-                  </li>
-                );
-              })}
-            </ol>
+                  </ol>
+                </section>
+              )}
+
+              {recommendedUpcoming.length > 0 && (
+                <section className="player-queue-section player-queue-recommended">
+                  <div className="player-queue-divider">
+                    <span className="mono">Recommended</span>
+                    <span className="player-queue-divider-count mono">
+                      {recommendedUpcoming.length}
+                    </span>
+                  </div>
+                  <ol className="player-queue-list">
+                    {recommendedUpcoming.map(({ track, index }) =>
+                      renderQueueItem(track, index, false),
+                    )}
+                  </ol>
+                </section>
+              )}
+            </div>
           )}
 
           {queuedImports.length > 0 && (

@@ -543,7 +543,7 @@ def process_next_job(
         job,
         runtime_config,
         app_settings.max_track_minutes,
-        app_settings.llm_auto_approve,
+        app_settings.llm_auto_approve or job.force_llm_approval,
     )
     return job
 

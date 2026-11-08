@@ -334,3 +334,33 @@ def test_worker_llm_failure_falls_back_to_review(
     assert job.status is RipJobStatus.needs_review
     assert job.error_message
     assert download_called is False
+
+def test_worker_force_llm_approval_overrides_disabled_setting(
+    db_session, media_settings, monkeypatch
+):
+    configure_settings(db_session, llm=False)
+    job = make_job(db_session, force_llm_approval=True)
+
+    monkeypatch.setattr(
+        importer,
+        "search_candidates",
+        lambda query: [
+            Candidate("https://example.com/a", "Test Song", "Artist A", 120),
+            Candidate("https://example.com/b", "Test Song", "Artist B", 130),
+        ],
+    )
+    monkeypatch.setattr(
+        importer,
+        "review_candidates_with_llm",
+        lambda query, candidates, config: LlmDecision(1, 0.91, "best match"),
+    )
+    monkeypatch.setattr(importer, "download_candidate", fake_download)
+    monkeypatch.setattr(importer, "convert_to_mp3", fake_convert)
+    monkeypatch.setattr(importer, "probe_duration", lambda path: 130)
+
+    process_next_job(db_session, media_settings)
+    db_session.refresh(job)
+
+    assert job.status is RipJobStatus.completed
+    assert job.candidate_url == "https://example.com/b"
+    assert job.candidate_artist == "Artist B"

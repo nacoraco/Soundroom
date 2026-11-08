@@ -2,6 +2,7 @@ import type {
   AppSettings,
   AppSettingsUpdateInput,
   AuthResponse,
+  DiscoverResponse,
   ImportCandidateSelectionInput,
   ImportConfig,
   ImportJob,
@@ -179,6 +180,24 @@ export async function deleteTrack(id: string): Promise<void> {
   return request<void>(`/api/tracks/${id}`, { method: "DELETE" });
 }
 
+export async function discoverSimilar(
+  seedTrackIds: string[],
+): Promise<DiscoverResponse> {
+  return request<DiscoverResponse>("/api/discover/similar", {
+    method: "POST",
+    body: JSON.stringify({ seed_track_ids: seedTrackIds }),
+  });
+}
+
+export async function discoverRadio(
+  seeds: Array<{ title: string; artist: string }>,
+): Promise<DiscoverResponse> {
+  return request<DiscoverResponse>("/api/discover/radio", {
+    method: "POST",
+    body: JSON.stringify({ seeds }),
+  });
+}
+
 export async function listPlaylists(): Promise<PlaylistSummary[]> {
   return request<PlaylistSummary[]>("/api/playlists");
 }
@@ -271,10 +290,15 @@ export async function previewImportCandidates(
 export async function createImportJob(
   query: string,
   candidate?: ImportCandidateSelectionInput,
+  forceLlmApproval = false,
 ): Promise<ImportJob> {
   return request<ImportJob>("/api/import-jobs", {
     method: "POST",
-    body: JSON.stringify({ query, candidate }),
+    body: JSON.stringify({
+      query,
+      candidate,
+      force_llm_approval: forceLlmApproval,
+    }),
   });
 }
 

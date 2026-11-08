@@ -298,6 +298,12 @@ class RipJob(Base):
     candidate_duration_seconds: Mapped[int | None] = mapped_column(
         Integer, nullable=True
     )
+    force_llm_approval: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="false",
+        nullable=False,
+    )
     track_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("tracks.id", ondelete="SET NULL"), index=True, nullable=True
     )

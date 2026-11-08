@@ -39,11 +39,13 @@ export function PlayerBar() {
   const position = Math.min(state.currentTime, duration);
   const canNext = state.currentIndex < state.queue.length - 1;
   const queueCount = state.queue.length + queuedImports.length;
-  const error = state.importError ?? state.error;
-  const status = state.importError
+  const importStatus = currentTrack.pending_status ?? state.importStatus;
+  const importError = currentTrack.pending_error ?? state.importError;
+  const error = importError ?? state.error;
+  const status = importError
     ? "Import failed"
     : isPending
-      ? importStatusLabel(state.importStatus)
+      ? importStatusLabel(importStatus)
       : state.error
         ? "Playback issue"
         : state.isPlaying

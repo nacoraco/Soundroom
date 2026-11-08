@@ -150,3 +150,16 @@ export interface PlaylistDetail {
 export interface PlaylistCreateInput {
   name: string;
 }
+
+export interface DiscoverRecommendation {
+  title: string;
+  artist: string;
+  local_track: Track | null;
+  score: number;
+  seed_count: number;
+}
+
+export interface DiscoverResponse {
+  seeds: string[];
+  recommendations: DiscoverRecommendation[];
+}

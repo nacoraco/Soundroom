@@ -168,4 +168,65 @@ describe("playerReducer", () => {
     expect(completed.playToken).toBeGreaterThan(withJob.playToken);
     expect(completed.importStatus).toBe("completed");
   });
+
+  it("keeps manual additions ahead of auto recommendations in their own order", () => {
+    const autoA = { ...track("auto-a", "Auto A"), origin: "auto" as const };
+    const autoB = { ...track("auto-b", "Auto B"), origin: "auto" as const };
+    const playing = playerReducer(initialPlayerState, {
+      type: "play",
+      track: first,
+    });
+    const withAuto = playerReducer(playing, {
+      type: "appendAuto",
+      tracks: [autoA, autoB],
+    });
+    const firstManual = playerReducer(withAuto, {
+      type: "enqueue",
+      track: second,
+    });
+    const secondManual = playerReducer(firstManual, {
+      type: "enqueue",
+      track: track("third", "Third Song"),
+    });
+
+    expect(secondManual.queue.map((item) => item.id)).toEqual([
+      "first",
+      "second",
+      "third",
+      "auto-a",
+      "auto-b",
+    ]);
+    expect(
+      secondManual.queue.filter((item) => item.origin === "auto"),
+    ).toHaveLength(2);
+  });
+
+  it("replaces pending auto tracks when they finish downloading", () => {
+    const pending = {
+      ...track("pending-auto", "Pending Auto", 0),
+      pending: true,
+      origin: "auto" as const,
+      pending_status: "downloading" as const,
+    };
+    const playing = playerReducer(initialPlayerState, {
+      type: "play",
+      track: first,
+    });
+    const withPending = playerReducer(playing, {
+      type: "appendAuto",
+      tracks: [pending],
+    });
+    const current = playerReducer(withPending, { type: "next" });
+    const resolved = playerReducer(current, {
+      type: "replacePending",
+      pendingId: "pending-auto",
+      track: second,
+    });
+
+    expect(current.isPlaying).toBe(true);
+    expect(current.queue[current.currentIndex].pending).toBe(true);
+    expect(resolved.queue[resolved.currentIndex].id).toBe("second");
+    expect(resolved.isPlaying).toBe(true);
+    expect(resolved.playToken).toBeGreaterThan(current.playToken);
+  });
 });

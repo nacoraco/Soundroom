@@ -10,7 +10,7 @@ Soundroom je spletna aplikacija za poslušanje osebne glasbene knjižnice. Upora
 - **F4 – Samodejni uvoz ob manjkajočem zadetku:** implementirano (skrbniške nastavitve, trajna opravila uvoja, ločen delavec z `yt-dlp`/FFmpeg, stanja opravil, uredniški pregled dvoumnih zadetkov, zahteva za uvoz iz praznega iskanja in neobvezno odločanje z modelom Laya).
 - **F5 – Predvajalnik in čakalna vrsta:** implementirano (avtorizirano pretakanje HTTP Range, predvajalnik s čakalno vrsto, Media Session, mobilna vrstica, razširjen pogled in namestljiva PWA).
 - **F6 – Osebni seznami predvajanja:** implementirano (lastniški CRUD, vrstni red skladb, iskanje in dodajanje, vlečenje za prerazporejanje, predvajanje seznama).
-- **F7:** v načrtu; naloge in napredek so na [GitHub Projectu Soundroom MVP](https://github.com/users/nacoraco/projects/5).
+- **F7 – Odkrij podobno in radio:** implementirano (Last.fm 	rack.getSimilar, lokalni in zunanji predlogi, samodejni radio z osveževanjem na zadnji skladbi, ročna prioriteta čakalne vrste, samodejni prenosi z LLM potrjevanjem in shranjevanje kot nov seznam).
 
 ## Dokumentacija
 
@@ -128,7 +128,7 @@ npm test
 npm run build
 ```
 
-## API (F1–F6)
+## API (F1–F7)
 
 | Metoda | Pot | Namen |
 |---|---|---|
@@ -205,6 +205,16 @@ Spreminjajoče zahteve zahtevajo glavo `X-CSRF-Token` z vrednostjo iz odgovora p
 - Vmesnik **Playlists** prikaže kartice seznamov in obrazec za nov seznam. Podrobnosti omogočajo iskanje po knjižnici, dodajanje, odstranjevanje, vlečenje vrstic ter pomožna gumba za premik gor/dol.
 - Gumb **Play all** naloži celoten seznam v skupno čakalno vrsto predvajalnika; posamezno skladbo je mogoče predvajati neposredno iz seznama.
 
+## Odkrij podobno in radio (F7)
+
+- Poslušalec izbere eno do tri skladbe iz lokalne knjižnice. Vmesnik onemogoči četrto izhodišče. Rezultati vsebujejo lokalne in zunanje skladbe.
+- Za vsako izhodišče API prek Last.fm `track.getSimilar` pridobi do 20 podobnih skladb; ključ `LASTFM_API_KEY` ostane samo v okolju zalednega sistema. Za `track.getSimilar` zadostuje API ključ; shared secret in callback sta potrebna le za Last.fm Web Authentication, ki ga aplikacija ne uporablja.
+- Kandidate normalizira in poveže z lokalnimi izvajalci ter naslovi. Združi ponovitve, izloči izhodišča in vrne največ 20 predlogov; lokalne skladbe so označene, zunanje pa se ob uporabi prenesejo. Če Last.fm za posamezno skladbo nima podatkov 	rack.getSimilar, se uporabi rezerva prek podobnih izvajalcev in njihovih najbolj predvajanih skladb.
+- Uvrstitev je vsota Last.fm podobnosti čez vsa izhodišča; pri izenačenju ima prednost kandidat, ki se pojavi pri več izhodiščih.
+- Ob predvajanju se samodejno ustvari radio: na začetku zadnje samodejne skladbe se pridobi novih 5 priporočil na podlagi zadnjih 5 samodejnih skladb. Samodejni del čakalne vrste se po 100 skladbah ponovno začne.
+- Ročno dodane skladbe se vstavijo takoj za trenutno skladbo oziroma za že čakajoče ročne skladbe, pred samodejne predloge. Ob ročnem dodajanju se priporočila osvežijo glede na trenutno in ročno izbrane skladbe. V razširjenem predvajalniku so **Now playing**, **Your queue** in **Recommended** ločeni; ko samodejna skladba postane trenutna, se prestavi v Now playing in seznam Recommended se skrajša.
+- Zunanje skladbe se prenesejo prek obstoječega uvoznega delavca; za tovrstna opravila je vsiljeno LLM samodejno potrjevanje. Če Last.fm ni dosegljiv ali ključ ni nastavljen, predvajanje, iskanje in seznami delujejo naprej.
+- V pogledu **Discover** je mogoče zunanje predloge prenesti in dodati v čakalno vrsto, pri shranjevanju seznama pa se vse skladbe prenesejo, dodajo v nov osebni seznam in nato v čakalno vrsto.
 ## Nalaganje glasbe (F2)
 
 - V uporabniškem vmesniku je na voljo stran **Upload**, vidna urednikom in skrbnikom.

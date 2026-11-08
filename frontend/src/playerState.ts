@@ -1,9 +1,12 @@
-﻿import type { ImportJobStatus, Track } from "./types";
+import type { ImportJobStatus, Track } from "./types";
 
 export interface PlayerTrack extends Track {
   pending?: boolean;
   import_job_id?: string;
+  pending_status?: ImportJobStatus | null;
+  pending_error?: string | null;
   thumbnail_url?: string | null;
+  origin?: "manual" | "auto";
 }
 
 export interface PlayerState {
@@ -25,6 +28,11 @@ export type PlayerAction =
   | { type: "play"; track: PlayerTrack; queue?: PlayerTrack[] }
   | { type: "playAt"; index: number }
   | { type: "enqueue"; track: PlayerTrack }
+  | { type: "appendAuto"; tracks: PlayerTrack[] }
+  | { type: "replaceUpcomingAuto"; tracks: PlayerTrack[] }
+  | { type: "replacePending"; pendingId: string; track: Track }
+  | { type: "setPendingJob"; pendingId: string; jobId: string; status: ImportJobStatus }
+  | { type: "setPendingState"; pendingId: string; status: ImportJobStatus | null; error: string | null }
   | { type: "beginImport"; track: PlayerTrack }
   | { type: "importJob"; jobId: string; status: ImportJobStatus }
   | { type: "importStatus"; status: ImportJobStatus }
@@ -103,7 +111,7 @@ function withIndex(
     ...state,
     queue,
     currentIndex: index,
-    isPlaying: Boolean(track) && !track.pending && isPlaying,
+    isPlaying: Boolean(track) && isPlaying,
     currentTime: 0,
     duration: track ? durationFor(track, track.duration_seconds) : 0,
     error: null,
@@ -152,19 +160,112 @@ export function playerReducer(
       if (state.queue.some((track) => track.id === action.track.id)) {
         return state;
       }
-      const queue = [...state.queue, action.track];
+      const manualTrack = action.track;
       if (state.currentIndex === -1) {
         return {
           ...state,
-          queue,
+          queue: [manualTrack],
           currentIndex: 0,
-          duration: durationFor(action.track, action.track.duration_seconds),
+          duration: durationFor(manualTrack, manualTrack.duration_seconds),
           currentTime: 0,
           error: null,
         };
       }
+
+      const queue = [...state.queue];
+      let insertAt = state.currentIndex + 1;
+      while (insertAt < queue.length && queue[insertAt].origin !== "auto") {
+        insertAt += 1;
+      }
+      queue.splice(insertAt, 0, manualTrack);
       return { ...state, queue };
     }
+
+    case "appendAuto": {
+      if (action.tracks.length === 0) {
+        return state;
+      }
+      const tracks = action.tracks.map((track) => ({
+        ...track,
+        origin: "auto" as const,
+      }));
+      return {
+        ...state,
+        queue: [...state.queue, ...tracks],
+      };
+    }
+
+    case "replaceUpcomingAuto": {
+      const queue = state.queue.filter(
+        (track, index) =>
+          index <= state.currentIndex || track.origin !== "auto",
+      );
+      return {
+        ...state,
+        queue: [
+          ...queue,
+          ...action.tracks.map((track) => ({
+            ...track,
+            origin: "auto" as const,
+          })),
+        ],
+      };
+    }
+
+    case "replacePending": {
+      const index = state.queue.findIndex(
+        (track) => track.id === action.pendingId,
+      );
+      if (index === -1) {
+        return state;
+      }
+      const previous = state.queue[index];
+      const queue = [...state.queue];
+      queue[index] = {
+        ...action.track,
+        origin: previous.origin,
+      };
+      if (index !== state.currentIndex) {
+        return { ...state, queue };
+      }
+      return {
+        ...state,
+        queue,
+        currentTime: 0,
+        duration: Math.max(action.track.duration_seconds, 0),
+        playToken: state.isPlaying
+          ? state.playToken + 1
+          : state.playToken,
+      };
+    }
+
+    case "setPendingJob":
+      return {
+        ...state,
+        queue: state.queue.map((track) =>
+          track.id === action.pendingId
+            ? {
+                ...track,
+                import_job_id: action.jobId,
+                pending_status: action.status,
+              }
+            : track,
+        ),
+      };
+
+    case "setPendingState":
+      return {
+        ...state,
+        queue: state.queue.map((track) =>
+          track.id === action.pendingId
+            ? {
+                ...track,
+                pending_status: action.status,
+                pending_error: action.error,
+              }
+            : track,
+        ),
+      };
 
     case "beginImport": {
       const track = { ...action.track, pending: true };

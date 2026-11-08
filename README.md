@@ -6,7 +6,8 @@ Soundroom je spletna aplikacija za poslušanje osebne glasbene knjižnice. Upora
 
 - **F1 – Prijava, odjava in vloge uporabnikov:** implementirano (prijava, seja, CSRF zaščita, odjava, skrbniško upravljanje uporabnikov).
 - **F2 – Uvoz glasbe v knjižnico:** implementirano (nalaganje MP3, branje ID3 metapodatkov, ročna dopolnitev, trajna shramba datotek, zaznavanje dvojnikov, seznam zadnjih dodanih skladb).
-- **F3–F7:** v načrtu; naloge in napredek so na [GitHub Projectu Soundroom MVP](https://github.com/users/nacoraco/projects/5).
+- **F3 – Iskanje po lokalni knjižnici:** implementirano (iskanje po naslovu in izvajalcu brez razlikovanja velikosti črk in šumnikov, najmanj trije znaki, paginacija po 20 zadetkov, prazna stanja in pripravljena gumba za predvajanje ter čakalno vrsto).
+- **F4–F7:** v načrtu; naloge in napredek so na [GitHub Projectu Soundroom MVP](https://github.com/users/nacoraco/projects/5).
 
 ## Dokumentacija
 
@@ -62,7 +63,7 @@ Soundroom je spletna aplikacija za poslušanje osebne glasbene knjižnice. Upora
    Copy-Item .env.example .env
    ```
 
-   Pred prvim zagonom obvezno spremenite vsaj `APP_SECRET_KEY`, `POSTGRES_PASSWORD` in `INITIAL_ADMIN_PASSWORD`.
+   Pred prvim zagonom obvezno spremenite vsaj `APP_SECRET_KEY`, `POSTGRES_PASSWORD`, `INITIAL_ADMIN_PASSWORD` in `INITIAL_LISTENER_PASSWORD`.
 
 2. Zaženite storitve:
 
@@ -75,7 +76,16 @@ Soundroom je spletna aplikacija za poslušanje osebne glasbene knjižnice. Upora
    - dokumentacija API-ja: <http://localhost:8000/docs>
    - zdravstvena točka: <http://localhost:8000/api/health>
 
-4. Prijavite se z računom iz `.env` (`INITIAL_ADMIN_EMAIL` in `INITIAL_ADMIN_PASSWORD`). Skrbnik lahko nato na strani **People** ustvari račune za poslušalce in urednike.
+4. Prijavite se z razvojnim računom iz `.env` (`INITIAL_ADMIN_*` oziroma `INITIAL_LISTENER_*`). Skrbnik lahko nato na strani **People** ustvari dodatne račune za poslušalce in urednike.
+
+### Privzeti razvojni računi
+
+| Vloga | E-pošta | Geslo |
+|---|---|---|
+| Skrbnik | `admin@example.com` | `change-me-now` |
+| Poslušalec | `listener@example.com` | `listener-password` |
+
+Računa se ustvarita ob prvem zagonu iz `INITIAL_ADMIN_*` in `INITIAL_LISTENER_*`. Gesli sta namenjeni samo lokalnemu razvoju; pred uporabo zunaj lokalnega okolja ju obvezno spremenite v `.env`.
 
 Zaustavitev: `docker compose down`. Podatki v PostgreSQL ostanejo v volumnu `pgdata`; z `docker compose down -v` jih izbrišete.
 
@@ -114,7 +124,7 @@ cd ..\frontend
 npm run build
 ```
 
-## API (F1–F2)
+## API (F1–F3)
 
 | Metoda | Pot | Namen |
 |---|---|---|
@@ -124,11 +134,19 @@ npm run build
 | `GET` | `/api/admin/users` | Seznam uporabnikov (skrbnik) |
 | `POST` | `/api/admin/users` | Ustvarjanje poslušalca ali urednika (skrbnik) |
 | `PATCH` | `/api/admin/users/{id}` | Sprememba vloge ali aktivnosti (skrbnik) |
-| `GET` | `/api/tracks` | Seznam razpoložljivih skladb (prijavljeni uporabniki) |
+| `GET` | `/api/tracks?q=&page=` | Iskanje in paginacija razpoložljivih skladb (prijavljeni uporabniki) |
 | `POST` | `/api/tracks` | Nalaganje MP3 (urednik ali skrbnik, multipart) |
 | `GET` | `/api/health` | Stanje API-ja in baze |
 
 Spreminjajoče zahteve zahtevajo glavo `X-CSRF-Token` z vrednostjo iz odgovora prijave oziroma `GET /api/auth/me`.
+
+## Iskanje po knjižnici (F3)
+
+- Iskalno polje v knjižnici počaka 300 ms po zadnjem vnosu in išče po naslovu skladbe ter imenu izvajalca.
+- Iskanje se izvede od treh znakov dalje in ne razlikuje velikosti črk ali šumnikov; krajša poizvedba vrne prazno stanje brez napake.
+- Rezultati so razdeljeni po 20. Trenutna stran in poizvedba se ohranita v naslovu URL, tako da paginacija in osvežitev ohranita iskanje.
+- Vsak rezultat prikaže naslov, izvajalca, album, trajanje in pripravljena gumba **Play** ter **+ Queue**; povezava na predvajalnik in čakalno vrsto pride v F5.
+- Odgovor `GET /api/tracks` je objekt z `items`, `page`, `page_size`, `total` in `total_pages`. Brez poizvedbe vrne zadnje dodane skladbe po straneh.
 
 ## Nalaganje glasbe (F2)
 
@@ -137,7 +155,7 @@ Spreminjajoče zahteve zahtevajo glavo `X-CSRF-Token` z vrednostjo iz odgovora p
 - Največja velikost je določena z `MAX_UPLOAD_MB` (privzeto 50 MB). Ob prekoračitvi odgovor navede največjo dovoljeno velikost.
 - Naslov in izvajalec se prebereta iz ID3 oznak (`TIT2`, `TPE1`), album iz `TALB`, leto pa iz `TDRC` oziroma `TYER`. Če naslov ali izvajalec manjkata, obrazec zahteva ročni vnos; ista izbrana datoteka se nato pošlje še enkrat.
 - Datoteke se shranijo v `MEDIA_STORAGE_PATH/tracks/`; v bazi je relativna pot, SHA-256 vsebine pa prepreči podvojene skladbe.
-- Po uspešnem uvozu se skladba prikaže v razdelku **Recently added** v knjižnici. Iskanje in predvajanje se dodata v F3/F5.
+- Po uspešnem uvozu se skladba prikaže v knjižnici in je takoj najdljiva z iskanjem. Predvajanje se doda v F5.
 
 ## Razvojni proces
 

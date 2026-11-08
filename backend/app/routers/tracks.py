@@ -10,10 +10,11 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Query,
     UploadFile,
     status,
 )
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
@@ -22,11 +23,25 @@ from ..db import get_db
 from ..deps import AuthContext, get_current_auth, require_csrf, require_roles
 from ..metadata import InvalidMp3Error, read_mp3_metadata
 from ..models import Album, Artist, Track, TrackSource, UserRole
-from ..schemas import TrackOut
+from ..schemas import TrackOut, TrackPage
 from ..storage import EmptyUpload, UploadTooLarge, save_upload_to_temp
 from ..text import normalize_text
 
 router = APIRouter(prefix="/api/tracks", tags=["tracks"])
+
+PAGE_SIZE = 20
+MIN_SEARCH_LENGTH = 3
+MAX_SEARCH_LENGTH = 200
+
+
+def _empty_page(page: int) -> TrackPage:
+    return TrackPage(
+        items=[],
+        page=page,
+        page_size=PAGE_SIZE,
+        total=0,
+        total_pages=0,
+    )
 
 
 def _track_out(track: Track, artist: Artist, album: Album | None) -> TrackOut:
@@ -44,19 +59,67 @@ def _track_out(track: Track, artist: Artist, album: Album | None) -> TrackOut:
     )
 
 
-@router.get("", response_model=list[TrackOut])
+@router.get("", response_model=TrackPage)
 def list_tracks(
+    q: str | None = Query(default=None, max_length=MAX_SEARCH_LENGTH),
+    page: int = Query(default=1, ge=1),
     _: AuthContext = Depends(get_current_auth),
     db: Session = Depends(get_db),
-) -> list[TrackOut]:
+) -> TrackPage:
+    raw_query = (q or "").strip()
+    normalized_query = normalize_text(raw_query)
+    if raw_query and len(normalized_query) < MIN_SEARCH_LENGTH:
+        return _empty_page(page)
+
+    filters = [Track.is_available.is_(True)]
+    if normalized_query:
+        filters.append(
+            or_(
+                Track.normalized_title.contains(
+                    normalized_query, autoescape=True
+                ),
+                Artist.normalized_name.contains(
+                    normalized_query, autoescape=True
+                ),
+            )
+        )
+
+    total = (
+        db.scalar(
+            select(func.count(Track.id))
+            .join(Artist, Track.artist_id == Artist.id)
+            .where(*filters)
+        )
+        or 0
+    )
+    if total == 0:
+        return _empty_page(page)
+
+    order_by = (
+        (Track.normalized_title.asc(), Artist.normalized_name.asc(), Track.id.asc())
+        if normalized_query
+        else (Track.created_at.desc(), Track.id.asc())
+    )
     tracks = db.scalars(
         select(Track)
+        .join(Artist, Track.artist_id == Artist.id)
         .options(joinedload(Track.artist), joinedload(Track.album))
-        .where(Track.is_available.is_(True))
-        .order_by(Track.created_at.desc(), Track.title.asc())
-        .limit(50)
+        .where(*filters)
+        .order_by(*order_by)
+        .offset((page - 1) * PAGE_SIZE)
+        .limit(PAGE_SIZE)
     ).all()
-    return [_track_out(track, track.artist, track.album) for track in tracks]
+
+    return TrackPage(
+        items=[
+            _track_out(track, track.artist, track.album)
+            for track in tracks
+        ],
+        page=page,
+        page_size=PAGE_SIZE,
+        total=total,
+        total_pages=(total + PAGE_SIZE - 1) // PAGE_SIZE,
+    )
 
 
 @router.post("", response_model=TrackOut, status_code=status.HTTP_201_CREATED)

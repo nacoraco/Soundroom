@@ -63,7 +63,7 @@ def test_upload_mp3_with_tags_creates_track(
 
     listing = client.get("/api/tracks")
     assert listing.status_code == 200
-    assert [item["id"] for item in listing.json()] == [track["id"]]
+    assert [item["id"] for item in listing.json()["items"]] == [track["id"]]
 
     stored = db_session.scalar(select(Track))
     assert stored is not None

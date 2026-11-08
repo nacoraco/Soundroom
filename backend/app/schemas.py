@@ -83,3 +83,11 @@ class TrackOut(BaseModel):
     source_type: TrackSource
     is_available: bool
     created_at: datetime
+
+
+class TrackPage(BaseModel):
+    items: list[TrackOut]
+    page: int
+    page_size: int
+    total: int
+    total_pages: int

@@ -1,8 +1,10 @@
-import { useQuery } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { useEffect, useState, type FormEvent } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 
 import { listTracks } from "../api";
 import { useAuth } from "../auth";
+import type { Track } from "../types";
 
 function formatDuration(seconds: number): string {
   const minutes = Math.floor(seconds / 60);
@@ -10,15 +12,141 @@ function formatDuration(seconds: number): string {
   return `${minutes}:${String(remainder).padStart(2, "0")}`;
 }
 
+function pageNumber(value: string | null): number {
+  const parsed = Number.parseInt(value ?? "1", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+}
+
 export function LibraryPage() {
-  const { data } = useAuth();
-  const user = data?.user;
+  const { data: auth } = useAuth();
+  const user = auth?.user;
   const canEdit = user?.role === "editor" || user?.role === "admin";
+  const [searchParams, setSearchParams] = useSearchParams();
+  const query = (searchParams.get("q") ?? "").trim();
+  const page = pageNumber(searchParams.get("page"));
+  const [input, setInput] = useState(query);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    setInput(query);
+  }, [query]);
+
+  useEffect(() => {
+    if (!notice) {
+      return;
+    }
+    const timer = window.setTimeout(() => setNotice(null), 4500);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
+  useEffect(() => {
+    const trimmed = input.trim();
+    if (trimmed === query) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      const next = new URLSearchParams();
+      if (trimmed) {
+        next.set("q", trimmed);
+      }
+      setSearchParams(next, { replace: true });
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [input, query, setSearchParams]);
+
+  const tooShort = query.length > 0 && query.length < 3;
+  const isSearching = query.length >= 3;
   const tracksQuery = useQuery({
-    queryKey: ["tracks"],
-    queryFn: listTracks,
+    queryKey: ["tracks", query, page],
+    queryFn: () => listTracks({ q: query || undefined, page }),
+    enabled: !tooShort,
+    placeholderData: keepPreviousData,
   });
-  const tracks = tracksQuery.data ?? [];
+
+  const tracks = tracksQuery.data?.items ?? [];
+  const total = tracksQuery.data?.total ?? 0;
+  const pageSize = tracksQuery.data?.page_size ?? 20;
+  const totalPages = tracksQuery.data?.total_pages ?? 0;
+  const firstResult = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const lastResult = (page - 1) * pageSize + tracks.length;
+  const showResults =
+    !tooShort &&
+    !tracksQuery.isError &&
+    !tracksQuery.isLoading &&
+    tracks.length > 0;
+  const showEmptySearch =
+    !tooShort &&
+    !tracksQuery.isError &&
+    !tracksQuery.isLoading &&
+    !tracksQuery.isFetching &&
+    isSearching &&
+    total === 0;
+  const showEmptyLibrary =
+    !tooShort &&
+    !tracksQuery.isError &&
+    !tracksQuery.isLoading &&
+    !tracksQuery.isFetching &&
+    !isSearching &&
+    total === 0;
+
+  useEffect(() => {
+    if (
+      tracksQuery.data &&
+      tracksQuery.data.total_pages > 0 &&
+      page > tracksQuery.data.total_pages
+    ) {
+      const next = new URLSearchParams();
+      if (query) {
+        next.set("q", query);
+      }
+      next.set("page", String(tracksQuery.data.total_pages));
+      setSearchParams(next, { replace: true });
+    }
+  }, [page, query, setSearchParams, tracksQuery.data]);
+
+  function applySearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const trimmed = input.trim();
+    const next = new URLSearchParams();
+    if (trimmed) {
+      next.set("q", trimmed);
+    }
+    setSearchParams(next, { replace: true });
+  }
+
+  function clearSearch() {
+    setInput("");
+    setSearchParams(new URLSearchParams(), { replace: true });
+  }
+
+  function goToPage(nextPage: number) {
+    const next = new URLSearchParams(searchParams);
+    if (nextPage > 1) {
+      next.set("page", String(nextPage));
+    } else {
+      next.delete("page");
+    }
+    setSearchParams(next);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function handleTrackAction(action: "play" | "queue", track: Track) {
+    const label = action === "play" ? "Playback" : "Queueing";
+    setNotice(`${label} for “${track.title}” will be connected in F5.`);
+  }
+
+  let statusText = `${total} ${
+    total === 1 ? "recording" : "recordings"
+  } in the archive`;
+  if (tracksQuery.isLoading) {
+    statusText = "Opening the shelves…";
+  } else if (tooShort) {
+    statusText = "Type at least 3 characters to search.";
+  } else if (tracksQuery.isFetching) {
+    statusText = "Searching the shelves…";
+  } else if (isSearching) {
+    statusText = `${total} ${total === 1 ? "match" : "matches"} for “${query}”`;
+  }
 
   return (
     <section className="page">
@@ -33,19 +161,86 @@ export function LibraryPage() {
         </div>
       </header>
 
-      {tracksQuery.isLoading && (
+      <section className="search-deck" aria-label="Search the library">
+        <form className="search-form" role="search" onSubmit={applySearch}>
+          <div className="search-field">
+            <span className="search-prefix mono" aria-hidden="true">
+              Search /
+            </span>
+            <input
+              type="search"
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              placeholder="Title or artist"
+              aria-label="Search by title or artist"
+              aria-describedby="search-status"
+              autoComplete="off"
+            />
+            {input && (
+              <button
+                type="button"
+                className="search-clear"
+                onClick={clearSearch}
+                aria-label="Clear search"
+              >
+                ×
+              </button>
+            )}
+          </div>
+          <button type="submit" className="button button-primary search-submit">
+            Search
+          </button>
+        </form>
+        <div className="search-meta">
+          <span className="eyebrow">Local catalog</span>
+          <span
+            className="search-help"
+            id="search-status"
+            aria-live="polite"
+          >
+            {statusText}
+          </span>
+        </div>
+      </section>
+
+      {tooShort && (
+        <div className="panel search-hint" role="status">
+          <span className="eyebrow">Search / Minimum three characters</span>
+          <h2>Keep typing.</h2>
+          <p>Search starts at three characters. Try a track title or artist.</p>
+        </div>
+      )}
+
+      {!tooShort && tracksQuery.isLoading && (
         <div className="panel">
           <p className="muted">Opening the shelves…</p>
         </div>
       )}
 
-      {tracksQuery.isError && (
+      {!tooShort && tracksQuery.isError && (
         <div className="form-error" role="alert">
           The library could not be loaded.
         </div>
       )}
 
-      {!tracksQuery.isLoading && !tracksQuery.isError && tracks.length === 0 && (
+      {showEmptySearch && (
+        <div className="panel search-empty">
+          <span className="eyebrow">Search / No matches</span>
+          <h2 className="search-query">
+            No matches for “{query}”.
+          </h2>
+          <p>Try another title or artist, or browse the full archive.</p>
+          <button
+            type="button"
+            className="button button-quiet"
+            onClick={clearSearch}
+          >
+            Clear search
+          </button>
+        </div>
+      )}
+
+      {showEmptyLibrary && (
         <div className="library-hero">
           <div className="sleeve-stage" aria-hidden="true">
             <div className="sleeve-record" />
@@ -60,26 +255,25 @@ export function LibraryPage() {
             <span className="eyebrow">Shelf 01 / Empty</span>
             <h2>The shelves are waiting.</h2>
             <p>
-              This is where your records will live. Uploads are ready; search
-              and playback arrive in the next movements, and the room will fill
-              up from there.
+              Search is ready. Add the first recording and the room will fill
+              up from there; playback and lists arrive in the next movements.
             </p>
 
             <ul className="coming-list" aria-label="Coming next">
               <li>
                 <span className="mono">01</span>
-                <span>Search the archive</span>
-                <span className="mono muted">Next</span>
-              </li>
-              <li>
-                <span className="mono">02</span>
                 <span>Play and queue</span>
                 <span className="mono muted">Next</span>
               </li>
               <li>
-                <span className="mono">03</span>
+                <span className="mono">02</span>
                 <span>Build playlists</span>
                 <span className="mono muted">Next</span>
+              </li>
+              <li>
+                <span className="mono">03</span>
+                <span>Discover similar</span>
+                <span className="mono muted">Later</span>
               </li>
             </ul>
 
@@ -101,15 +295,16 @@ export function LibraryPage() {
         </div>
       )}
 
-      {!tracksQuery.isLoading && !tracksQuery.isError && tracks.length > 0 && (
+      {showResults && (
         <section className="track-index">
           <div className="track-index-head">
             <div>
               <span className="eyebrow">
-                Shelf 01 / {tracks.length}{" "}
-                {tracks.length === 1 ? "recording" : "recordings"}
+                Shelf 01 / {total} {total === 1 ? "recording" : "recordings"}
               </span>
-              <h2>Recently added</h2>
+              <h2>
+                {isSearching ? `Results for “${query}”` : "Recently added"}
+              </h2>
             </div>
             {canEdit && (
               <Link
@@ -121,11 +316,22 @@ export function LibraryPage() {
             )}
           </div>
 
+          <div className="track-range">
+            <span className="mono">
+              Showing {firstResult}–{lastResult} of {total}
+            </span>
+            {totalPages > 1 && (
+              <span className="mono">
+                Page {page} / {totalPages}
+              </span>
+            )}
+          </div>
+
           <ol className="track-list">
             {tracks.map((track, index) => (
               <li key={track.id}>
                 <span className="track-number mono">
-                  {String(index + 1).padStart(2, "0")}
+                  {String((page - 1) * pageSize + index + 1).padStart(2, "0")}
                 </span>
                 <span className="track-main">
                   <strong>{track.title}</strong>
@@ -137,13 +343,60 @@ export function LibraryPage() {
                 <span className="track-duration mono">
                   {formatDuration(track.duration_seconds)}
                 </span>
+                <span className="track-actions">
+                  <button
+                    type="button"
+                    className="track-action"
+                    onClick={() => handleTrackAction("play", track)}
+                    title="Playback arrives in F5"
+                  >
+                    Play
+                  </button>
+                  <button
+                    type="button"
+                    className="track-action track-action-quiet"
+                    onClick={() => handleTrackAction("queue", track)}
+                    title="Queueing arrives in F5"
+                  >
+                    + Queue
+                  </button>
+                </span>
               </li>
             ))}
           </ol>
 
+          {notice && (
+            <p className="track-notice" role="status">
+              {notice}
+            </p>
+          )}
+
+          {totalPages > 1 && (
+            <nav className="pagination" aria-label="Library pages">
+              <button
+                type="button"
+                className="button button-quiet"
+                onClick={() => goToPage(page - 1)}
+                disabled={page <= 1}
+              >
+                Previous
+              </button>
+              <span className="mono">
+                Page {page} / {totalPages}
+              </span>
+              <button
+                type="button"
+                className="button button-quiet"
+                onClick={() => goToPage(page + 1)}
+                disabled={page >= totalPages}
+              >
+                Next
+              </button>
+            </nav>
+          )}
+
           <p className="role-note">
-            Search and playback are added in the next features. Uploaded
-            recordings are stored in the archive.
+            Play and queue controls are prepared here and connect in F5.
           </p>
         </section>
       )}

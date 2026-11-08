@@ -1,6 +1,9 @@
 import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
 
 import { useAuth, useLogout } from "../auth";
+import { PlayerProvider, usePlayer } from "../player";
+import { PlayerBar } from "./PlayerBar";
+import { PlayerExpanded } from "./PlayerExpanded";
 
 function initials(name: string | undefined): string {
   if (!name) {
@@ -17,7 +20,16 @@ function initials(name: string | undefined): string {
 }
 
 export function AppLayout() {
+  return (
+    <PlayerProvider>
+      <AppLayoutContent />
+    </PlayerProvider>
+  );
+}
+
+function AppLayoutContent() {
   const { data } = useAuth();
+  const { currentTrack } = usePlayer();
   const logoutMutation = useLogout();
   const navigate = useNavigate();
   const user = data?.user;
@@ -32,7 +44,7 @@ export function AppLayout() {
   }
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${currentTrack ? "has-player" : ""}`}>
       <aside className="sidebar">
         <Link to="/library" className="brand">
           <span className="brand-mark" aria-hidden="true" />
@@ -101,6 +113,9 @@ export function AppLayout() {
       <main className="app-main">
         <Outlet />
       </main>
+
+      <PlayerBar />
+      <PlayerExpanded />
     </div>
   );
 }

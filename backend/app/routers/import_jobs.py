@@ -1,21 +1,28 @@
+import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..deps import AuthContext, get_current_auth, require_csrf
+from ..importer import rank_candidates, search_candidates
 from ..models import ACTIVE_RIP_JOB_STATUSES, RipJob, RipJobStatus
 from ..schemas import (
     ImportJobConfig,
     ImportJobCreate,
     ImportJobOut,
+    ImportPreview,
+    ImportPreviewCandidate,
 )
 from ..settings_service import get_or_create_app_settings
 from ..text import normalize_text
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/import-jobs", tags=["import-jobs"])
+PREVIEW_LIMIT = 8
 
 
 @router.get("/config", response_model=ImportJobConfig)
@@ -27,6 +34,65 @@ def import_config(
     return ImportJobConfig(
         auto_rip_on_miss=settings.auto_rip_on_miss,
         max_track_minutes=settings.max_track_minutes,
+    )
+
+
+@router.get("/preview", response_model=ImportPreview)
+def preview_import_candidates(
+    q: str = Query(min_length=3, max_length=300),
+    _: AuthContext = Depends(get_current_auth),
+    db: Session = Depends(get_db),
+) -> ImportPreview:
+    settings = get_or_create_app_settings(db)
+    if not settings.auto_rip_on_miss:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Automatic import is disabled.",
+        )
+
+    query_text = q.strip()
+    if len(normalize_text(query_text)) < 3:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Enter at least 3 characters.",
+        )
+
+    try:
+        candidates = search_candidates(query_text, limit=PREVIEW_LIMIT)
+    except Exception as exc:
+        logger.exception("External import preview failed for %r", query_text)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="External search failed. Try again.",
+        ) from exc
+
+    max_seconds = max(1, settings.max_track_minutes) * 60
+    ranked = rank_candidates(query_text, candidates, None)
+    preview_candidates: list[ImportPreviewCandidate] = []
+    for _, candidate in ranked:
+        if candidate.video_id is None:
+            continue
+        duration = candidate.duration_seconds
+        preview_candidates.append(
+            ImportPreviewCandidate(
+                video_id=candidate.video_id,
+                url=candidate.url,
+                title=candidate.title,
+                artist=candidate.artist or candidate.uploader or "Unknown artist",
+                uploader=candidate.uploader,
+                duration_seconds=duration,
+                view_count=candidate.view_count,
+                thumbnail_url=candidate.thumbnail_url,
+                within_duration_limit=(
+                    duration is not None and 0 < duration <= max_seconds
+                ),
+            )
+        )
+
+    return ImportPreview(
+        query=query_text,
+        max_track_minutes=settings.max_track_minutes,
+        candidates=preview_candidates,
     )
 
 
@@ -51,6 +117,20 @@ def create_import_job(
             detail="Enter at least 3 characters.",
         )
 
+    if payload.candidate is not None:
+        max_seconds = max(1, settings.max_track_minutes) * 60
+        if (
+            payload.candidate.duration_seconds is not None
+            and payload.candidate.duration_seconds > max_seconds
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "The selected release exceeds the configured maximum "
+                    "track duration."
+                ),
+            )
+
     existing = db.scalar(
         select(RipJob)
         .where(
@@ -69,6 +149,14 @@ def create_import_job(
         normalized_query=normalized_query,
         status=RipJobStatus.queued,
     )
+    if payload.candidate is not None:
+        job.candidate_url = (
+            "https://www.youtube.com/watch?v="
+            f"{payload.candidate.video_id}"
+        )
+        job.candidate_title = payload.candidate.title
+        job.candidate_artist = payload.candidate.artist
+        job.candidate_duration_seconds = payload.candidate.duration_seconds
     db.add(job)
     db.commit()
     db.refresh(job)

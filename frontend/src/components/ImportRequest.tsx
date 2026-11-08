@@ -1,66 +1,52 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
-import { createImportJob, getImportConfig, getImportJob } from "../api";
-import { ACTIVE_IMPORT_STATUSES, IMPORT_STATUS_LABELS } from "../importStatus";
+import { getImportConfig, previewImportCandidates } from "../api";
+import { usePlayer } from "../player";
+import { PlayIcon } from "./playerIcons";
 
 function formatDuration(seconds: number | null): string {
   if (seconds === null) {
-    return "unknown length";
+    return "length unknown";
   }
   const minutes = Math.floor(seconds / 60);
   const remainder = seconds % 60;
   return `${minutes}:${String(remainder).padStart(2, "0")}`;
 }
 
-export function ImportRequest({ query }: { query: string }) {
-  const queryClient = useQueryClient();
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+function formatViews(count: number | null): string | null {
+  if (count === null) {
+    return null;
+  }
+  if (count >= 1_000_000) {
+    return `${(count / 1_000_000).toFixed(1).replace(/\.0$/, "")}M views`;
+  }
+  if (count >= 1_000) {
+    return `${(count / 1_000).toFixed(1).replace(/\.0$/, "")}K views`;
+  }
+  return `${count} views`;
+}
 
+export function ImportRequest({ query }: { query: string }) {
+  const { startImport } = usePlayer();
   const configQuery = useQuery({
     queryKey: ["import-config"],
     queryFn: getImportConfig,
   });
 
-  const jobQuery = useQuery({
-    queryKey: ["import-job", jobId],
-    queryFn: () => getImportJob(jobId as string),
-    enabled: Boolean(jobId),
-    refetchInterval: (query) => {
-      const status = query.state.data?.status;
-      return status && ACTIVE_IMPORT_STATUSES.includes(status) ? 2500 : false;
-    },
+  const previewQuery = useQuery({
+    queryKey: ["import-preview", query],
+    queryFn: () => previewImportCandidates(query),
+    enabled: Boolean(configQuery.data?.auto_rip_on_miss),
+    retry: false,
+    staleTime: 5 * 60 * 1000,
   });
 
-  useEffect(() => {
-    setJobId(null);
-    setError(null);
-  }, [query]);
-
-  useEffect(() => {
-    if (jobQuery.data?.status === "completed") {
-      queryClient.invalidateQueries({ queryKey: ["tracks"] });
-    }
-  }, [jobQuery.data?.status, queryClient]);
-
-  const createMutation = useMutation({
-    mutationFn: () => createImportJob(query),
-    onSuccess: (job) => {
-      setJobId(job.id);
-      setError(null);
-    },
-    onError: (mutationError) => {
-      setError(
-        mutationError instanceof Error
-          ? mutationError.message
-          : "The import could not be requested.",
-      );
-    },
-  });
-
-  const job = jobQuery.data;
   const config = configQuery.data;
+  const preview = previewQuery.data;
+  const maxMinutes = config?.max_track_minutes ?? preview?.max_track_minutes ?? 15;
+  const hasEligibleCandidate = Boolean(
+    preview?.candidates.some((candidate) => candidate.within_duration_limit),
+  );
 
   if (configQuery.isLoading) {
     return (
@@ -89,7 +75,7 @@ export function ImportRequest({ query }: { query: string }) {
     );
   }
 
-  if (!config.auto_rip_on_miss && !job) {
+  if (!config.auto_rip_on_miss) {
     return (
       <div className="import-request">
         <p className="muted">
@@ -104,76 +90,134 @@ export function ImportRequest({ query }: { query: string }) {
     <div className="import-request" aria-live="polite">
       <div className="import-request-head">
         <span className="eyebrow">Missing recording</span>
-        {job && (
-          <span className={`status-pill status-${job.status}`}>
-            {IMPORT_STATUS_LABELS[job.status]}
-          </span>
-        )}
       </div>
 
-      {!job && (
-        <>
-          <p>
-            No local match. Request this recording from the external source?
-          </p>
-          <div className="import-request-actions">
-            <button
-              type="button"
-              className="button button-primary button-small"
-              onClick={() => createMutation.mutate()}
-              disabled={createMutation.isPending}
-            >
-              {createMutation.isPending ? "Requesting…" : "Request import"}
-            </button>
-            <span className="mono muted">
-              Maximum {config.max_track_minutes} min
-            </span>
-          </div>
-        </>
-      )}
+      <p>
+        No local match. Press Play on the exact external release. The full
+        player opens at 0:00 and starts automatically when the download is
+        ready.
+      </p>
 
-      {job && (
-        <div className="import-request-status">
-          <p>
-            {job.status === "needs_review" &&
-              "A curator is checking this candidate before it is downloaded."}
-            {job.status === "completed" &&
-              "The recording was added to the archive. Refreshing the search…"}
-            {job.status === "failed" &&
-              (job.error_message ?? "The import failed.")}
-            {job.status === "cancelled" &&
-              "The import was rejected by an editor."}
-            {ACTIVE_IMPORT_STATUSES.includes(job.status) &&
-              job.status !== "needs_review" &&
-              "The import worker is working on this request."}
-          </p>
-          {job.candidate_title && (
-            <p className="import-candidate">
-              <strong>{job.candidate_title}</strong>
-              {job.candidate_artist ? ` · ${job.candidate_artist}` : ""}
-              <span className="mono">
-                {" "}
-                · {formatDuration(job.candidate_duration_seconds)}
-              </span>
-            </p>
-          )}
-          {(job.status === "failed" || job.status === "cancelled") && (
-            <button
-              type="button"
-              className="button button-quiet"
-              onClick={() => createMutation.mutate()}
-              disabled={createMutation.isPending}
-            >
-              Try again
-            </button>
-          )}
+      {previewQuery.isLoading && (
+        <div className="import-preview-state">
+          <span className="import-preview-pulse" aria-hidden="true" />
+          <span>Searching YouTube for releases…</span>
         </div>
       )}
 
-      {error && (
-        <p className="form-error" role="alert">
-          {error}
-        </p>
+      {previewQuery.isError && (
+        <div className="import-preview-state import-preview-error">
+          <span>
+            {previewQuery.error instanceof Error
+              ? previewQuery.error.message
+              : "External releases could not be loaded."}
+          </span>
+          <button
+            type="button"
+            className="button button-quiet"
+            onClick={() => previewQuery.refetch()}
+          >
+            Try again
+          </button>
+        </div>
+      )}
+
+      {preview && preview.candidates.length === 0 && (
+        <div className="import-preview-state">
+          <span>No external releases found for this query.</span>
+          <button
+            type="button"
+            className="button button-quiet"
+            onClick={() => previewQuery.refetch()}
+          >
+            Search again
+          </button>
+        </div>
+      )}
+
+      {preview && preview.candidates.length > 0 && (
+        <>
+          <ul className="import-candidates" aria-label="External releases">
+            {preview.candidates.map((candidate, index) => {
+              const views = formatViews(candidate.view_count);
+              return (
+                <li className="import-candidate-row" key={candidate.video_id}>
+                  <div
+                    className={`import-candidate ${
+                      candidate.within_duration_limit ? "" : "is-disabled"
+                    }`}
+                  >
+                    <span className="import-candidate-thumb">
+                      {candidate.thumbnail_url ? (
+                        <img
+                          src={candidate.thumbnail_url}
+                          alt=""
+                          loading="lazy"
+                          referrerPolicy="no-referrer"
+                          onError={(event) => {
+                            event.currentTarget.style.display = "none";
+                          }}
+                        />
+                      ) : null}
+                      <span className="import-candidate-index mono">
+                        {String(index + 1).padStart(2, "0")}
+                      </span>
+                    </span>
+                    <span className="import-candidate-copy">
+                      <strong>{candidate.title}</strong>
+                      <span className="import-candidate-meta">
+                        {candidate.artist}
+                        {candidate.uploader &&
+                        candidate.uploader !== candidate.artist
+                          ? ` · ${candidate.uploader}`
+                          : ""}
+                      </span>
+                      <span className="import-candidate-stats mono">
+                        {formatDuration(candidate.duration_seconds)}
+                        {views ? ` · ${views}` : ""}
+                      </span>
+                    </span>
+                    {candidate.within_duration_limit ? (
+                      <button
+                        type="button"
+                        className="import-candidate-play"
+                        onClick={() => void startImport(query, candidate)}
+                        aria-label={`Play ${candidate.title}`}
+                      >
+                        <PlayIcon size={13} />
+                        Play
+                      </button>
+                    ) : (
+                      <span className="import-candidate-state mono">
+                        {candidate.duration_seconds === null
+                          ? "Length unknown"
+                          : `Over ${maxMinutes} min`}
+                      </span>
+                    )}
+                  </div>
+                  <a
+                    className="import-candidate-link"
+                    href={candidate.url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    YouTube ↗
+                  </a>
+                </li>
+              );
+            })}
+          </ul>
+
+          <p className="import-preview-note mono">
+            Max {maxMinutes} min · opens the player and starts when ready
+          </p>
+
+          {!hasEligibleCandidate && (
+            <p className="form-error">
+              Every external release is over the configured duration limit.
+            </p>
+          )}
+        </>
       )}
     </div>
   );

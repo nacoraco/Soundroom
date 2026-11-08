@@ -1,10 +1,16 @@
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { useEffect, useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
-import { listTracks } from "../api";
+import { deleteTrack, listTracks } from "../api";
 import { useAuth } from "../auth";
 import { ImportRequest } from "../components/ImportRequest";
+import { usePlayer } from "../player";
 import type { Track } from "../types";
 
 function formatDuration(seconds: number): string {
@@ -20,6 +26,8 @@ function pageNumber(value: string | null): number {
 
 export function LibraryPage() {
   const { data: auth } = useAuth();
+  const { playTrack, enqueue, currentTrack, removeTrack } = usePlayer();
+  const queryClient = useQueryClient();
   const user = auth?.user;
   const canEdit = user?.role === "editor" || user?.role === "admin";
   const [searchParams, setSearchParams] = useSearchParams();
@@ -132,8 +140,42 @@ export function LibraryPage() {
   }
 
   function handleTrackAction(action: "play" | "queue", track: Track) {
-    const label = action === "play" ? "Playback" : "Queueing";
-    setNotice(`${label} for “${track.title}” will be connected in F5.`);
+    if (action === "play") {
+      playTrack(track, tracks);
+      setNotice(`Playing “${track.title}”.`);
+      return;
+    }
+    const added = enqueue(track);
+    setNotice(
+      added
+        ? `“${track.title}” added to the queue.`
+        : `“${track.title}” is already in the queue.`,
+    );
+  }
+
+  const deleteMutation = useMutation({
+    mutationFn: (track: Track) => deleteTrack(track.id),
+    onSuccess: (_data, track) => {
+      removeTrack(track.id);
+      queryClient.invalidateQueries({ queryKey: ["tracks"] });
+      setNotice(`“${track.title}” was deleted from the server.`);
+    },
+    onError: (mutationError, track) => {
+      setNotice(
+        mutationError instanceof Error
+          ? mutationError.message
+          : `“${track.title}” could not be deleted.`,
+      );
+    },
+  });
+
+  function handleDeleteTrack(track: Track) {
+    const confirmed = window.confirm(
+      `Delete “${track.title}” from the server?\n\nThe audio file will be removed permanently.`,
+    );
+    if (confirmed) {
+      deleteMutation.mutate(track);
+    }
   }
 
   let statusText = `${total} ${
@@ -257,15 +299,16 @@ export function LibraryPage() {
             <span className="eyebrow">Shelf 01 / Empty</span>
             <h2>The shelves are waiting.</h2>
             <p>
-              Search is ready. Add the first recording and the room will fill
-              up from there; playback and lists arrive in the next movements.
+              Search and playback are ready. Add the first recording and the
+              room will fill up from there; playlists arrive in the next
+              movement.
             </p>
 
             <ul className="coming-list" aria-label="Coming next">
               <li>
                 <span className="mono">01</span>
                 <span>Play and queue</span>
-                <span className="mono muted">Next</span>
+                <span className="mono muted">Ready</span>
               </li>
               <li>
                 <span className="mono">02</span>
@@ -331,7 +374,12 @@ export function LibraryPage() {
 
           <ol className="track-list">
             {tracks.map((track, index) => (
-              <li key={track.id}>
+              <li
+                className={
+                  currentTrack?.id === track.id ? "is-current-track" : undefined
+                }
+                key={track.id}
+              >
                 <span className="track-number mono">
                   {String((page - 1) * pageSize + index + 1).padStart(2, "0")}
                 </span>
@@ -350,7 +398,7 @@ export function LibraryPage() {
                     type="button"
                     className="track-action"
                     onClick={() => handleTrackAction("play", track)}
-                    title="Playback arrives in F5"
+                    title="Play now"
                   >
                     Play
                   </button>
@@ -358,10 +406,21 @@ export function LibraryPage() {
                     type="button"
                     className="track-action track-action-quiet"
                     onClick={() => handleTrackAction("queue", track)}
-                    title="Queueing arrives in F5"
+                    title="Add to queue"
                   >
                     + Queue
                   </button>
+                  {user?.role === "admin" && (
+                    <button
+                      type="button"
+                      className="track-action track-action-danger"
+                      onClick={() => handleDeleteTrack(track)}
+                      disabled={deleteMutation.isPending}
+                      title="Delete from server"
+                    >
+                      Delete
+                    </button>
+                  )}
                 </span>
               </li>
             ))}
@@ -398,7 +457,8 @@ export function LibraryPage() {
           )}
 
           <p className="role-note">
-            Play and queue controls are prepared here and connect in F5.
+            Playback continues while you browse. Open the console below for the
+            full queue.
           </p>
         </section>
       )}

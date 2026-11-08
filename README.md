@@ -8,7 +8,8 @@ Soundroom je spletna aplikacija za poslušanje osebne glasbene knjižnice. Upora
 - **F2 – Uvoz glasbe v knjižnico:** implementirano (nalaganje MP3, branje ID3 metapodatkov, ročna dopolnitev, trajna shramba datotek, zaznavanje dvojnikov, seznam zadnjih dodanih skladb).
 - **F3 – Iskanje po lokalni knjižnici:** implementirano (iskanje po naslovu in izvajalcu brez razlikovanja velikosti črk in šumnikov, najmanj trije znaki, paginacija po 20 zadetkov, prazna stanja in pripravljena gumba za predvajanje ter čakalno vrsto).
 - **F4 – Samodejni uvoz ob manjkajočem zadetku:** implementirano (skrbniške nastavitve, trajna opravila uvoja, ločen delavec z `yt-dlp`/FFmpeg, stanja opravil, uredniški pregled dvoumnih zadetkov, zahteva za uvoz iz praznega iskanja in neobvezno odločanje z modelom Laya).
-- **F5–F7:** v načrtu; naloge in napredek so na [GitHub Projectu Soundroom MVP](https://github.com/users/nacoraco/projects/5).
+- **F5 – Predvajalnik in čakalna vrsta:** implementirano (avtorizirano pretakanje HTTP Range, predvajalnik s čakalno vrsto, Media Session, mobilna vrstica, razširjen pogled in namestljiva PWA).
+- **F6–F7:** v načrtu; naloge in napredek so na [GitHub Projectu Soundroom MVP](https://github.com/users/nacoraco/projects/5).
 
 ## Dokumentacija
 
@@ -26,11 +27,11 @@ Soundroom je spletna aplikacija za poslušanje osebne glasbene knjižnice. Upora
 
 | Področje | Tehnologije |
 |---|---|
-| Frontend | React, TypeScript, Vite, `@tanstack/react-query`, `react-router`, `react-hook-form`, `zod`; PWA v F5 |
+| Frontend | React, TypeScript, Vite, `@tanstack/react-query`, `react-router`, `react-hook-form`, `zod`; PWA (manifest in service worker) |
 | Backend | Python 3.12+, FastAPI, Pydantic 2, Uvicorn |
 | Podatkovna baza | PostgreSQL, SQLAlchemy 2, Alembic |
 | Avtentikacija | Argon2id, sejni piškotek `HttpOnly`, strežniško preverjanje vlog, CSRF žeton |
-| Glasba in uvoz | Trajna shramba datotek, `mutagen` za ID3 metapodatke, `yt-dlp`, FFmpeg/ffprobe, pretakanje HTTP Range (F2–F5) |
+| Glasba in uvoz | Trajna shramba datotek, `mutagen` za ID3 metapodatke, `yt-dlp`, FFmpeg/ffprobe, avtorizirano pretakanje HTTP Range |
 | Priporočila | Last.fm API (`track.getSimilar`, F7) |
 | Lokalni razvoj | Docker Compose, `.env`, `pytest` |
 
@@ -122,10 +123,11 @@ cd backend
 .venv\Scripts\python.exe -m pytest
 
 cd ..\frontend
+npm test
 npm run build
 ```
 
-## API (F1–F4)
+## API (F1–F5)
 
 | Metoda | Pot | Namen |
 |---|---|---|
@@ -136,10 +138,14 @@ npm run build
 | `POST` | `/api/admin/users` | Ustvarjanje poslušalca ali urednika (skrbnik) |
 | `PATCH` | `/api/admin/users/{id}` | Sprememba vloge ali aktivnosti (skrbnik) |
 | `GET` | `/api/tracks?q=&page=` | Iskanje in paginacija razpoložljivih skladb (prijavljeni uporabniki) |
+| `GET` | `/api/tracks/{id}` | Metapodatki posamezne razpoložljive skladbe |
+| `GET` | `/api/tracks/{id}/stream` | Avtorizirano pretakanje MP3 s podporo `Range` (200/206/416) |
 | `POST` | `/api/tracks` | Nalaganje MP3 (urednik ali skrbnik, multipart) |
+| `DELETE` | `/api/tracks/{id}` | Trajni izbris skladbe in datoteke z diska (skrbnik) |
 | `GET/PUT` | `/api/admin/settings` | Skrbniške nastavitve samodejnega uvoza |
 | `GET` | `/api/import-jobs/config` | Razpoložljivost samodejnega uvoza za prijavljene uporabnike |
-| `POST` | `/api/import-jobs` | Zahteva za uvoz manjkajoče skladbe z združevanjem aktivnih opravil |
+| `GET` | `/api/import-jobs/preview?q=` | Predogled zunanjih izdaj za ročno izbiro (brez LLM) |
+| `POST` | `/api/import-jobs` | Zahteva za uvoz manjkajoče skladbe, z izbrano zunanjo izdajo ali samodejnim iskanjem |
 | `GET` | `/api/import-jobs/{id}` | Stanje opravila uvoza |
 | `GET` | `/api/editor/import-jobs?status=` | Seznam opravil za uredniški pregled |
 | `PATCH` | `/api/editor/import-jobs/{id}` | Popravek naslova in izvajalca kandidata |
@@ -154,12 +160,13 @@ Spreminjajoče zahteve zahtevajo glavo `X-CSRF-Token` z vrednostjo iz odgovora p
 - Iskalno polje v knjižnici počaka 300 ms po zadnjem vnosu in išče po naslovu skladbe ter imenu izvajalca.
 - Iskanje se izvede od treh znakov dalje in ne razlikuje velikosti črk ali šumnikov; krajša poizvedba vrne prazno stanje brez napake.
 - Rezultati so razdeljeni po 20. Trenutna stran in poizvedba se ohranita v naslovu URL, tako da paginacija in osvežitev ohranita iskanje.
-- Vsak rezultat prikaže naslov, izvajalca, album, trajanje in pripravljena gumba **Play** ter **+ Queue**; povezava na predvajalnik in čakalno vrsto pride v F5.
+- Vsak rezultat prikaže naslov, izvajalca, album in trajanje ter gumba **Play** in **+ Queue**. Play nastavi vidne rezultate kot čakalno vrsto, + Queue doda skladbo brez podvajanja.
 - Odgovor `GET /api/tracks` je objekt z `items`, `page`, `page_size`, `total` in `total_pages`. Brez poizvedbe vrne zadnje dodane skladbe po straneh.
 
 ## Samodejni uvoz (F4)
 
 - Skrbnik na strani **Settings** upravlja `auto_rip_on_miss`, `max_track_minutes` in neobvezni `llm_auto_approve`. Privzeto je uvoz izklopljen, največja dolžina pa 15 minut; LLM samodejno potrjevanje je privzeto izklopljeno.
+- Iskanje z lokalnim zadetkom ne sproži uvoza. Če zadetka ni, uporabnik vidi predogled zunanjih izdaj in sam izbere natančno izdajo; ta pot ne uporablja LLM. `llm_auto_approve` ostaja za opravila, ustvarjena brez izbrane izdaje (na primer prek API-ja).
 - Nastavitev velja za nova opravila; že ustvarjena opravila se ne prekličejo. Poslušalci in uredniki nastavitev ne morejo spreminjati.
 - Deterministični razvrščevalnik samodejno sprejme jasnega zmagovalca (ujemanje naslova/izvajalca, uradni kanal, razlika pred drugim kandidatom).
 - Če je izbira nejasna in je vklopljen `llm_auto_approve`, delavec pošlje največ pet kandidatov lokalnemu modelu **Laya** prek Ollame. Laya je odločitveni model, zato ga kličemo prek Ollaminega `/v1/systemone` z izbiro med oštevilčenimi kandidati; vrne izbrano številko in verjetnosti. Izbere kandidata z najvišjo verjetnostjo; prag je privzeto 0. Če klic modela ne uspe, opravilo ostane v uredniškem pregledu.
@@ -173,6 +180,17 @@ Spreminjajoče zahteve zahtevajo glavo `X-CSRF-Token` z vrednostjo iz odgovora p
 - Uredniki in skrbniki na strani **Imports** pregledajo kandidate, popravijo naslov ali izvajalca ter jih potrdijo ali zavrnejo. Zavrnitev ne prenese ničesar.
 - Testi zunanje klice `yt-dlp`/FFmpeg nadomestijo z nadomestki in ne potrebujejo zunanjih storitev.
 
+## Predvajanje in čakalna vrsta (F5)
+
+- Predvajanje poteka prek `GET /api/tracks/{id}/stream`. Zahteva veljavno sejo, preveri razpoložljivost skladbe in datoteko ter podpira `Range` z odgovoroma `200` in `206`; neveljavni ali nezadovoljivi obsegi vrnejo `416` s `Content-Range`.
+- Datoteke niso neposredno dostopne prek statične poti; pot se preveri znotraj `MEDIA_STORAGE_PATH`, odgovor pa vsebuje `Accept-Ranges`, `Content-Type` in dolžino vsebine.
+- Predvajalnik je v skupnem kontekstu nad postavitvijo, zato se predvajanje in čakalna vrsta ohranita med brskanjem po straneh. Gumb **Play** v knjižnici nastavi trenutne rezultate kot čakalno vrsto, **+ Queue** pa doda posamezno skladbo brez podvajanja.
+- Na voljo so predvajanje/pavza, prejšnja/naslednja skladba, premikanje po skladbi, odstranjevanje iz čakalne vrste in čiščenje vrste. Media Session API posreduje metapodatke in sistemske kontrole.
+- Prazno iskanje pokaže predogled do osmih zunanjih izdaj s sličico, naslovom, izvajalcem, trajanjem in številom ogledov. Vsaka izdaja ima gumb **Play**; predvajalnik se odpre pri `0:00`, počaka na prenos in samodejno začne predvajati, ko je skladba objavljena. Opravilo se ustvari z izbranim videom, zato iskanje ne uporablja LLM in delavec ne ponovi iskanja. Predolge izdaje in izdaje z neznanim trajanjem so onemogočene.
+- Skrbnik lahko v knjižnici izbriše skladbo z gumbom **Delete**; API odstrani zapis in pripadajočo zvočno datoteko, pot pa mora ostati znotraj `MEDIA_STORAGE_PATH`.
+- Na telefonu je predvajalnik pritrjen na dno, razširjen pogled pa je celozaslonski. Postavitev je enoročna in brez vodoravnega pomikanja.
+- PWA je namestljiva prek `manifest.webmanifest`, ikon in servisnega delavca. Na Androidu jo v Chromu dodate z **Add to Home screen**; zagon z ikone odpre `/library`.
+
 ## Nalaganje glasbe (F2)
 
 - V uporabniškem vmesniku je na voljo stran **Upload**, vidna urednikom in skrbnikom.
@@ -180,7 +198,7 @@ Spreminjajoče zahteve zahtevajo glavo `X-CSRF-Token` z vrednostjo iz odgovora p
 - Največja velikost je določena z `MAX_UPLOAD_MB` (privzeto 50 MB). Ob prekoračitvi odgovor navede največjo dovoljeno velikost.
 - Naslov in izvajalec se prebereta iz ID3 oznak (`TIT2`, `TPE1`), album iz `TALB`, leto pa iz `TDRC` oziroma `TYER`. Če naslov ali izvajalec manjkata, obrazec zahteva ročni vnos; ista izbrana datoteka se nato pošlje še enkrat.
 - Datoteke se shranijo v `MEDIA_STORAGE_PATH/tracks/`; v bazi je relativna pot, SHA-256 vsebine pa prepreči podvojene skladbe.
-- Po uspešnem uvozu se skladba prikaže v knjižnici in je takoj najdljiva z iskanjem. Predvajanje se doda v F5.
+- Po uspešnem uvozu se skladba prikaže v knjižnici in je takoj najdljiva ter predvajljiva.
 
 ## Razvojni proces
 

@@ -1,0 +1,64 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
+import { describe, expect, it } from "vitest";
+
+import { PlayerProvider, usePlayer } from "./player";
+import type { Track } from "./types";
+
+const track: Track = {
+  id: "first",
+  title: "First Song",
+  artist_name: "Test Artist",
+  album_title: null,
+  release_year: null,
+  duration_seconds: 180,
+  mime_type: "audio/mpeg",
+  source_type: "upload",
+  is_available: true,
+  created_at: "2026-11-08T00:00:00Z",
+};
+
+function LibraryRoute() {
+  const { playTrack } = usePlayer();
+  return (
+    <>
+      <button type="button" onClick={() => playTrack(track)}>
+        Play track
+      </button>
+      <Link to="/other">Go to other page</Link>
+    </>
+  );
+}
+
+function OtherRoute() {
+  const { currentTrack } = usePlayer();
+  return <span data-testid="now-playing">{currentTrack?.title ?? "none"}</span>;
+}
+
+describe("PlayerProvider", () => {
+  it("keeps playing the current track while routes change", () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <PlayerProvider>
+          <MemoryRouter initialEntries={["/library"]}>
+            <Routes>
+              <Route path="/library" element={<LibraryRoute />} />
+              <Route path="/other" element={<OtherRoute />} />
+            </Routes>
+          </MemoryRouter>
+        </PlayerProvider>
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Play track" }));
+    fireEvent.click(
+      screen.getByRole("link", { name: "Go to other page" }),
+    );
+
+    expect(screen.getByTestId("now-playing")).toHaveTextContent("First Song");
+  });
+});

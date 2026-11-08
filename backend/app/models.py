@@ -12,6 +12,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    UniqueConstraint,
     Uuid,
     func,
 )
@@ -52,6 +53,9 @@ class User(Base):
 
     sessions: Mapped[list[UserSession]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
+    )
+    playlists: Mapped[list[Playlist]] = relationship(
+        back_populates="owner", cascade="all, delete-orphan"
     )
 
 
@@ -157,6 +161,60 @@ class Track(Base):
 
     artist: Mapped[Artist] = relationship(back_populates="tracks")
     album: Mapped[Album | None] = relationship(back_populates="tracks")
+
+
+class Playlist(Base):
+    __tablename__ = "playlists"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    owner_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        index=True,
+        nullable=False,
+    )
+
+    owner: Mapped[User] = relationship(back_populates="playlists")
+    items: Mapped[list[PlaylistItem]] = relationship(
+        back_populates="playlist",
+        cascade="all, delete-orphan",
+        order_by="PlaylistItem.position",
+    )
+
+
+class PlaylistItem(Base):
+    __tablename__ = "playlist_items"
+    __table_args__ = (
+        UniqueConstraint(
+            "playlist_id", "track_id", name="uq_playlist_items_playlist_track"
+        ),
+        UniqueConstraint(
+            "playlist_id", "position", name="uq_playlist_items_playlist_position"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    playlist_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("playlists.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    track_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tracks.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    added_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    playlist: Mapped[Playlist] = relationship(back_populates="items")
+    track: Mapped[Track] = relationship()
 
 
 class AppSettings(Base):

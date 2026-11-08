@@ -194,3 +194,57 @@ class ImportJobOut(BaseModel):
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+
+class PlaylistCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+    @field_validator("name")
+    @classmethod
+    def strip_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Playlist name is required")
+        return value
+
+
+class PlaylistUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+    @field_validator("name")
+    @classmethod
+    def strip_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Playlist name is required")
+        return value
+
+
+class PlaylistItemCreate(BaseModel):
+    track_id: UUID
+
+
+class PlaylistReorder(BaseModel):
+    item_ids: list[UUID] = Field(min_length=1, max_length=1000)
+
+
+class PlaylistItemOut(BaseModel):
+    id: UUID
+    position: int
+    track: TrackOut
+
+
+class PlaylistSummary(BaseModel):
+    id: UUID
+    name: str
+    item_count: int
+    total_duration_seconds: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class PlaylistDetail(BaseModel):
+    id: UUID
+    name: str
+    created_at: datetime
+    updated_at: datetime
+    items: list[PlaylistItemOut]

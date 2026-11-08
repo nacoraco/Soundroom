@@ -8,6 +8,9 @@ import type {
   ImportJobStatus,
   ImportJobUpdateInput,
   ImportPreview,
+  PlaylistCreateInput,
+  PlaylistDetail,
+  PlaylistSummary,
   Track,
   TrackPage,
   User,
@@ -174,6 +177,70 @@ export async function uploadTrack(formData: FormData): Promise<Track> {
 
 export async function deleteTrack(id: string): Promise<void> {
   return request<void>(`/api/tracks/${id}`, { method: "DELETE" });
+}
+
+export async function listPlaylists(): Promise<PlaylistSummary[]> {
+  return request<PlaylistSummary[]>("/api/playlists");
+}
+
+export async function createPlaylist(
+  input: PlaylistCreateInput,
+): Promise<PlaylistDetail> {
+  return request<PlaylistDetail>("/api/playlists", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function getPlaylist(id: string): Promise<PlaylistDetail> {
+  return request<PlaylistDetail>(`/api/playlists/${id}`);
+}
+
+export async function updatePlaylist(
+  id: string,
+  input: PlaylistCreateInput,
+): Promise<PlaylistDetail> {
+  return request<PlaylistDetail>(`/api/playlists/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function deletePlaylist(id: string): Promise<void> {
+  return request<void>(`/api/playlists/${id}`, { method: "DELETE" });
+}
+
+export async function addPlaylistItem(
+  playlistId: string,
+  trackId: string,
+): Promise<PlaylistDetail> {
+  return request<PlaylistDetail>(`/api/playlists/${playlistId}/items`, {
+    method: "POST",
+    body: JSON.stringify({ track_id: trackId }),
+  });
+}
+
+export async function removePlaylistItem(
+  playlistId: string,
+  itemId: string,
+): Promise<PlaylistDetail> {
+  return request<PlaylistDetail>(
+    `/api/playlists/${playlistId}/items/${itemId}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function reorderPlaylistItems(
+  playlistId: string,
+  itemIds: string[],
+): Promise<PlaylistDetail> {
+  return request<PlaylistDetail>(
+    `/api/playlists/${playlistId}/items/reorder`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ item_ids: itemIds }),
+    },
+  );
 }
 
 export async function getAppSettings(): Promise<AppSettings> {

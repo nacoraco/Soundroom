@@ -7,6 +7,8 @@ import { AdminSettingsPage } from "./pages/AdminSettingsPage";
 import { AdminUsersPage } from "./pages/AdminUsersPage";
 import { ImportJobsPage } from "./pages/ImportJobsPage";
 import { LibraryPage } from "./pages/LibraryPage";
+import { PlaylistDetailPage } from "./pages/PlaylistDetailPage";
+import { PlaylistsPage } from "./pages/PlaylistsPage";
 import { LoginPage } from "./pages/LoginPage";
 import { UploadPage } from "./pages/UploadPage";
 
@@ -28,6 +30,8 @@ export default function App() {
           <Route element={<ProtectedRoute />}>
             <Route element={<AppLayout />}>
               <Route path="/library" element={<LibraryPage />} />
+              <Route path="/playlists" element={<PlaylistsPage />} />
+              <Route path="/playlists/:playlistId" element={<PlaylistDetailPage />} />
               <Route element={<EditorRoute />}>
                 <Route path="/upload" element={<UploadPage />} />
                 <Route path="/imports" element={<ImportJobsPage />} />

@@ -3,7 +3,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
-from .models import TrackSource, UserRole
+from .models import RipJobStatus, TrackSource, UserRole
 
 
 class UserOut(BaseModel):
@@ -91,3 +91,68 @@ class TrackPage(BaseModel):
     page_size: int
     total: int
     total_pages: int
+
+
+class AppSettingsOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    auto_rip_on_miss: bool
+    llm_auto_approve: bool
+    max_track_minutes: int
+    updated_at: datetime
+
+
+class AppSettingsUpdate(BaseModel):
+    auto_rip_on_miss: bool
+    llm_auto_approve: bool = False
+    max_track_minutes: int = Field(ge=1, le=1440)
+
+
+class ImportJobCreate(BaseModel):
+    query: str = Field(min_length=3, max_length=300)
+
+    @field_validator("query")
+    @classmethod
+    def strip_query(cls, value: str) -> str:
+        value = value.strip()
+        if len(value) < 3:
+            raise ValueError("Enter at least 3 characters")
+        return value
+
+
+class ImportJobConfig(BaseModel):
+    auto_rip_on_miss: bool
+    max_track_minutes: int
+
+
+class ImportJobUpdate(BaseModel):
+    candidate_title: str | None = Field(default=None, min_length=1, max_length=300)
+    candidate_artist: str | None = Field(default=None, min_length=1, max_length=200)
+
+    @field_validator("candidate_title", "candidate_artist")
+    @classmethod
+    def strip_candidate_value(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("Value cannot be empty")
+        return value
+
+
+class ImportJobOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    query_text: str
+    normalized_query: str
+    status: RipJobStatus
+    candidate_url: str | None
+    candidate_title: str | None
+    candidate_artist: str | None
+    candidate_duration_seconds: int | None
+    track_id: UUID | None
+    error_message: str | None
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None

@@ -51,10 +51,22 @@ export function AppLayout() {
               Upload
             </NavLink>
           )}
+          {canEdit && (
+            <NavLink to="/imports">
+              <span className="nav-index">03</span>
+              Imports
+            </NavLink>
+          )}
           {user?.role === "admin" && (
             <NavLink to="/admin/users">
-              <span className="nav-index">03</span>
+              <span className="nav-index">04</span>
               People
+            </NavLink>
+          )}
+          {user?.role === "admin" && (
+            <NavLink to="/admin/settings">
+              <span className="nav-index">05</span>
+              Settings
             </NavLink>
           )}
         </nav>

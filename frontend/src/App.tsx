@@ -3,7 +3,9 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 
 import { AdminRoute, EditorRoute, ProtectedRoute } from "./auth";
 import { AppLayout } from "./components/AppLayout";
+import { AdminSettingsPage } from "./pages/AdminSettingsPage";
 import { AdminUsersPage } from "./pages/AdminUsersPage";
+import { ImportJobsPage } from "./pages/ImportJobsPage";
 import { LibraryPage } from "./pages/LibraryPage";
 import { LoginPage } from "./pages/LoginPage";
 import { UploadPage } from "./pages/UploadPage";
@@ -28,9 +30,14 @@ export default function App() {
               <Route path="/library" element={<LibraryPage />} />
               <Route element={<EditorRoute />}>
                 <Route path="/upload" element={<UploadPage />} />
+                <Route path="/imports" element={<ImportJobsPage />} />
               </Route>
               <Route element={<AdminRoute />}>
                 <Route path="/admin/users" element={<AdminUsersPage />} />
+                <Route
+                  path="/admin/settings"
+                  element={<AdminSettingsPage />}
+                />
               </Route>
             </Route>
           </Route>

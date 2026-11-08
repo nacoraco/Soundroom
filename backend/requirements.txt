@@ -9,3 +9,4 @@ argon2-cffi==23.1.0
 email-validator==2.2.0
 mutagen==1.47.0
 python-multipart==0.0.20
+yt-dlp==2026.10.26

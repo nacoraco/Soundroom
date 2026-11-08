@@ -9,6 +9,7 @@ from sqlalchemy import (
     DateTime,
     Enum as SAEnum,
     ForeignKey,
+    Index,
     Integer,
     String,
     Uuid,
@@ -156,4 +157,100 @@ class Track(Base):
 
     artist: Mapped[Artist] = relationship(back_populates="tracks")
     album: Mapped[Album | None] = relationship(back_populates="tracks")
+
+
+class AppSettings(Base):
+    __tablename__ = "app_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    auto_rip_on_miss: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    llm_auto_approve: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    max_track_minutes: Mapped[int] = mapped_column(
+        Integer, default=15, nullable=False
+    )
+    updated_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class RipJobStatus(StrEnum):
+    queued = "queued"
+    searching = "searching"
+    downloading = "downloading"
+    processing = "processing"
+    needs_review = "needs_review"
+    completed = "completed"
+    failed = "failed"
+    cancelled = "cancelled"
+
+
+ACTIVE_RIP_JOB_STATUSES = (
+    RipJobStatus.queued,
+    RipJobStatus.searching,
+    RipJobStatus.downloading,
+    RipJobStatus.processing,
+    RipJobStatus.needs_review,
+)
+
+
+class RipJob(Base):
+    __tablename__ = "rip_jobs"
+    __table_args__ = (
+        Index(
+            "ix_rip_jobs_normalized_query_status",
+            "normalized_query",
+            "status",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    requested_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    query_text: Mapped[str] = mapped_column(String(300), nullable=False)
+    normalized_query: Mapped[str] = mapped_column(
+        String(300), index=True, nullable=False
+    )
+    status: Mapped[RipJobStatus] = mapped_column(
+        SAEnum(
+            RipJobStatus,
+            name="rip_job_status",
+            native_enum=False,
+            length=30,
+            create_constraint=True,
+            validate_strings=True,
+        ),
+        default=RipJobStatus.queued,
+        index=True,
+        nullable=False,
+    )
+    candidate_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    candidate_title: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    candidate_artist: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    candidate_duration_seconds: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    track_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("tracks.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    error_message: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True, nullable=False
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 

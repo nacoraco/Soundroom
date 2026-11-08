@@ -1,0 +1,193 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState, type FormEvent } from "react";
+
+import { getAppSettings, updateAppSettings } from "../api";
+
+export function AdminSettingsPage() {
+  const queryClient = useQueryClient();
+  const settingsQuery = useQuery({
+    queryKey: ["app-settings"],
+    queryFn: getAppSettings,
+  });
+  const [autoRip, setAutoRip] = useState(false);
+  const [llmAutoApprove, setLlmAutoApprove] = useState(false);
+  const [maxMinutes, setMaxMinutes] = useState("15");
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    if (settingsQuery.data) {
+      setAutoRip(settingsQuery.data.auto_rip_on_miss);
+      setLlmAutoApprove(settingsQuery.data.llm_auto_approve);
+      setMaxMinutes(String(settingsQuery.data.max_track_minutes));
+    }
+  }, [settingsQuery.data]);
+
+  const saveMutation = useMutation({
+    mutationFn: updateAppSettings,
+    onSuccess: (data) => {
+      queryClient.setQueryData(["app-settings"], data);
+      queryClient.invalidateQueries({ queryKey: ["import-config"] });
+      setSaved(true);
+      setError(null);
+    },
+    onError: () => {
+      setSaved(false);
+      setError("The settings could not be saved.");
+    },
+  });
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaved(false);
+    const minutes = Number.parseInt(maxMinutes, 10);
+    if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) {
+      setError("Enter a maximum length between 1 and 1440 minutes.");
+      return;
+    }
+    setError(null);
+    saveMutation.mutate({
+      auto_rip_on_miss: autoRip,
+      llm_auto_approve: llmAutoApprove,
+      max_track_minutes: minutes,
+    });
+  }
+
+  return (
+    <section className="page">
+      <header className="page-header">
+        <div className="page-title">
+          <span className="eyebrow">Administration / Settings</span>
+          <h1>Automatic import</h1>
+        </div>
+        <div className="page-aside">
+          <span className="eyebrow">Admin only</span>
+          <span>Global import policy</span>
+        </div>
+      </header>
+
+      {settingsQuery.isLoading && (
+        <div className="panel">
+          <p className="muted">Loading settings…</p>
+        </div>
+      )}
+
+      {settingsQuery.isError && (
+        <div className="form-error" role="alert">
+          The settings could not be loaded.
+        </div>
+      )}
+
+      {settingsQuery.data && (
+        <div className="admin-layout settings-layout">
+          <div className="panel">
+            <div className="panel-head">
+              <span className="eyebrow">Import policy</span>
+              <h2>Missing tracks</h2>
+              <p className="muted">
+                Decide whether a search without a local match may request a new
+                track from the external source.
+              </p>
+            </div>
+
+            <form className="settings-form" onSubmit={handleSubmit} noValidate>
+              <label className="toggle-row">
+                <span className="toggle-copy">
+                  <strong>Automatic import</strong>
+                  <span>
+                    When enabled, listeners and editors can request a missing
+                    track from the empty search state.
+                  </span>
+                </span>
+                <span className="switch">
+                  <input
+                    type="checkbox"
+                    checked={autoRip}
+                    onChange={(event) => setAutoRip(event.target.checked)}
+                    aria-label="Enable automatic import"
+                  />
+                  <span className="switch-track" aria-hidden="true" />
+                </span>
+              </label>
+
+              <label className="toggle-row">
+                <span className="toggle-copy">
+                  <strong>Laya auto-review</strong>
+                  <span>
+                    Ask the local Laya model to choose the highest-probability
+                    version when the deterministic match is ambiguous. The
+                    choice is accepted automatically; only a failed model call
+                    falls back to review.
+                  </span>
+                </span>
+                <span className="switch">
+                  <input
+                    type="checkbox"
+                    checked={llmAutoApprove}
+                    onChange={(event) =>
+                      setLlmAutoApprove(event.target.checked)
+                    }
+                    aria-label="Use Laya for ambiguous imports"
+                  />
+                  <span className="switch-track" aria-hidden="true" />
+                </span>
+              </label>
+
+              <label className="field">
+                <span>Maximum track length in minutes</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={1440}
+                  value={maxMinutes}
+                  onChange={(event) => setMaxMinutes(event.target.value)}
+                  aria-label="Maximum track length in minutes"
+                />
+              </label>
+
+              {error && (
+                <p className="form-error" role="alert">
+                  {error}
+                </p>
+              )}
+              {saved && !error && (
+                <p className="form-success" role="status">
+                  Settings saved. The change applies to new import jobs.
+                </p>
+              )}
+
+              <button
+                type="submit"
+                className="button button-primary"
+                disabled={saveMutation.isPending}
+              >
+                {saveMutation.isPending ? "Saving…" : "Save settings"}
+              </button>
+            </form>
+          </div>
+
+          <aside className="panel settings-note">
+            <span className="eyebrow">Current policy</span>
+            <h2>{autoRip ? "Import is open." : "Import is closed."}</h2>
+            <p>
+              {autoRip
+                ? "Empty searches can request a missing recording. Candidates over the duration limit are discarded before download."
+                : "Search will only look in the local archive. No external import can be requested."}
+            </p>
+            {llmAutoApprove && autoRip && (
+              <p>
+                Ambiguous candidates are sent to Laya. The option with the
+                highest probability is accepted automatically; if the model
+                call fails, the job stays in the editorial queue.
+              </p>
+            )}
+            <p className="mono muted">
+              Updated{" "}
+              {new Date(settingsQuery.data.updated_at).toLocaleString()}
+            </p>
+          </aside>
+        </div>
+      )}
+    </section>
+  );
+}

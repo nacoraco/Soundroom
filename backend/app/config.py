@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     initial_listener_email: str = "listener@example.com"
     initial_listener_password: str = "listener-password"
     initial_listener_display_name: str = "Listener"
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "laya"
+    ollama_timeout_seconds: int = 30
+    llm_confidence_threshold: float = 0.0
     max_upload_mb: int = 50
     media_storage_path: str = "./data/audio"
 

@@ -1,5 +1,11 @@
 import type {
+  AppSettings,
+  AppSettingsUpdateInput,
   AuthResponse,
+  ImportConfig,
+  ImportJob,
+  ImportJobStatus,
+  ImportJobUpdateInput,
   Track,
   TrackPage,
   User,
@@ -157,5 +163,62 @@ export async function uploadTrack(formData: FormData): Promise<Track> {
   return request<Track>("/api/tracks", {
     method: "POST",
     body: formData,
+  });
+}
+
+export async function getAppSettings(): Promise<AppSettings> {
+  return request<AppSettings>("/api/admin/settings");
+}
+
+export async function updateAppSettings(
+  input: AppSettingsUpdateInput,
+): Promise<AppSettings> {
+  return request<AppSettings>("/api/admin/settings", {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function getImportConfig(): Promise<ImportConfig> {
+  return request<ImportConfig>("/api/import-jobs/config");
+}
+
+export async function createImportJob(query: string): Promise<ImportJob> {
+  return request<ImportJob>("/api/import-jobs", {
+    method: "POST",
+    body: JSON.stringify({ query }),
+  });
+}
+
+export async function getImportJob(id: string): Promise<ImportJob> {
+  return request<ImportJob>(`/api/import-jobs/${id}`);
+}
+
+export async function listImportJobs(
+  status?: ImportJobStatus,
+): Promise<ImportJob[]> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : "";
+  return request<ImportJob[]>(`/api/editor/import-jobs${query}`);
+}
+
+export async function updateImportJob(
+  id: string,
+  input: ImportJobUpdateInput,
+): Promise<ImportJob> {
+  return request<ImportJob>(`/api/editor/import-jobs/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function approveImportJob(id: string): Promise<ImportJob> {
+  return request<ImportJob>(`/api/editor/import-jobs/${id}/approve`, {
+    method: "POST",
+  });
+}
+
+export async function rejectImportJob(id: string): Promise<ImportJob> {
+  return request<ImportJob>(`/api/editor/import-jobs/${id}/reject`, {
+    method: "POST",
   });
 }

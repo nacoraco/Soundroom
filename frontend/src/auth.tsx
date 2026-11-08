@@ -33,6 +33,10 @@ export function useLogout() {
     onSettled: () => {
       queryClient.setQueryData(AUTH_KEY, null);
       queryClient.removeQueries({ queryKey: ["admin-users"] });
+      queryClient.removeQueries({ queryKey: ["app-settings"] });
+      queryClient.removeQueries({ queryKey: ["import-config"] });
+      queryClient.removeQueries({ queryKey: ["import-jobs"] });
+      queryClient.removeQueries({ queryKey: ["import-job"] });
     },
   });
 }

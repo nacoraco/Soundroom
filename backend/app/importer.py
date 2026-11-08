@@ -1,0 +1,512 @@
+from __future__ import annotations
+
+import hashlib
+import logging
+import math
+import shutil
+import subprocess
+import tempfile
+import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from uuid import uuid4
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from .config import Settings, get_settings
+from .db import SessionLocal
+from .llm_review import review_candidates_with_llm
+from .models import (
+    Artist,
+    RipJob,
+    RipJobStatus,
+    Track,
+    TrackSource,
+)
+from .settings_service import get_or_create_app_settings
+from .text import normalize_text
+
+logger = logging.getLogger(__name__)
+
+AUTO_APPROVE_MIN_SCORE = 3.0
+AUTO_APPROVE_MARGIN = 0.75
+VERSION_MARKERS = (
+    "live",
+    "cover",
+    "karaoke",
+    "instrumental",
+    "remix",
+    "reaction",
+    "extended",
+    "nightcore",
+    "slowed",
+    "sped up",
+    "bbc",
+    "session",
+)
+
+
+@dataclass(frozen=True)
+class Candidate:
+    url: str
+    title: str
+    artist: str | None
+    duration_seconds: int | None
+    uploader: str | None = None
+    view_count: int | None = None
+
+
+def _candidate_url(entry: dict) -> str | None:
+    url = entry.get("webpage_url") or entry.get("url")
+    if not url:
+        video_id = entry.get("id")
+        if video_id:
+            url = f"https://www.youtube.com/watch?v={video_id}"
+    return url
+
+
+def search_candidates(query: str) -> list[Candidate]:
+    import yt_dlp
+
+    options = {
+        "quiet": True,
+        "no_warnings": True,
+        "extract_flat": True,
+        "skip_download": True,
+        "noplaylist": True,
+    }
+    with yt_dlp.YoutubeDL(options) as ydl:
+        info = ydl.extract_info(f"ytsearch5:{query}", download=False)
+
+    entries = list(info.get("entries") or []) if info else []
+    candidates: list[Candidate] = []
+    for entry in entries[:5]:
+        url = _candidate_url(entry)
+        title = entry.get("track") or entry.get("title") or ""
+        artist = (
+            entry.get("artist")
+            or entry.get("creator")
+            or entry.get("uploader")
+            or entry.get("channel")
+        )
+        duration = entry.get("duration")
+        uploader = entry.get("channel") or entry.get("uploader")
+        view_count = entry.get("view_count")
+        if not url or not title:
+            continue
+        candidates.append(
+            Candidate(
+                url=url,
+                title=str(title),
+                artist=str(artist) if artist else None,
+                duration_seconds=int(duration) if duration is not None else None,
+                uploader=str(uploader) if uploader else None,
+                view_count=int(view_count) if view_count is not None else None,
+            )
+        )
+    return candidates
+
+
+def _match_score(query: str, candidate: Candidate) -> float:
+    normalized_query = normalize_text(query)
+    normalized_title = normalize_text(candidate.title)
+    normalized_artist = normalize_text(candidate.artist or "")
+    haystack = f"{normalized_title} {normalized_artist}"
+    tokens = normalized_query.split()
+    if not tokens:
+        return 0
+
+    hits = sum(1 for token in tokens if token in haystack)
+    score = (hits / len(tokens)) * 2
+    if normalized_query in normalized_title:
+        score += 2
+    elif normalized_query in haystack:
+        score += 1
+
+    if normalized_artist and normalized_query in normalized_artist:
+        score += 0.5
+
+    for marker in VERSION_MARKERS:
+        if marker in normalized_title and marker not in normalized_query:
+            score -= 0.35
+
+    uploader = normalize_text(candidate.uploader or "")
+    if any(
+        marker in uploader
+        for marker in ("official", "vevo", "topic")
+    ):
+        score += 0.6
+    if candidate.view_count:
+        score += min(math.log10(candidate.view_count + 1) / 10, 0.5)
+
+    return max(score, 0)
+
+
+def rank_candidates(
+    query: str,
+    candidates: list[Candidate],
+    max_seconds: int,
+) -> list[tuple[float, Candidate]]:
+    eligible = [
+        candidate
+        for candidate in candidates
+        if candidate.duration_seconds is None
+        or candidate.duration_seconds <= max_seconds
+    ]
+    return sorted(
+        ((_match_score(query, candidate), candidate) for candidate in eligible),
+        key=lambda item: item[0],
+        reverse=True,
+    )
+
+
+def choose_candidate(
+    query: str,
+    candidates: list[Candidate],
+    max_seconds: int,
+) -> tuple[Candidate | None, bool]:
+    scored = rank_candidates(query, candidates, max_seconds)
+    if not scored:
+        return None, False
+
+    top_score, top_candidate = scored[0]
+    second_score = scored[1][0] if len(scored) > 1 else None
+    clear_margin = (
+        second_score is None
+        or top_score - second_score >= AUTO_APPROVE_MARGIN
+    )
+    if (
+        top_score >= AUTO_APPROVE_MIN_SCORE
+        and clear_margin
+        and top_candidate.title
+        and top_candidate.artist
+    ):
+        return top_candidate, False
+    return top_candidate, True
+
+
+def download_candidate(candidate: Candidate, workdir: Path) -> Path:
+    import yt_dlp
+
+    options = {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "overwrites": True,
+        "format": "bestaudio/best",
+        "outtmpl": str(workdir / "%(id)s.%(ext)s"),
+    }
+    with yt_dlp.YoutubeDL(options) as ydl:
+        ydl.download([candidate.url])
+
+    files = [
+        path
+        for path in workdir.iterdir()
+        if path.is_file() and path.suffix not in {".part", ".ytdl"}
+    ]
+    if not files:
+        raise RuntimeError("yt-dlp did not produce an audio file.")
+    return max(files, key=lambda path: path.stat().st_size)
+
+
+def convert_to_mp3(source: Path, destination: Path) -> Path:
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(source),
+            "-vn",
+            "-codec:a",
+            "libmp3lame",
+            "-q:a",
+            "2",
+            str(destination),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    if not destination.is_file():
+        raise RuntimeError("FFmpeg did not produce an MP3 file.")
+    return destination
+
+
+def probe_duration(path: Path) -> int:
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    try:
+        duration = int(round(float(result.stdout.strip())))
+    except ValueError as exc:
+        raise RuntimeError("Could not read audio duration.") from exc
+    if duration <= 0:
+        raise RuntimeError("Audio duration is invalid.")
+    return duration
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _candidate_from_job(job: RipJob) -> Candidate:
+    if not (
+        job.candidate_url
+        and job.candidate_title
+        and job.candidate_artist
+    ):
+        raise ValueError("Candidate metadata is incomplete.")
+    return Candidate(
+        url=job.candidate_url,
+        title=job.candidate_title,
+        artist=job.candidate_artist,
+        duration_seconds=job.candidate_duration_seconds,
+    )
+
+
+def _fail_job(db: Session, job_id, message: str) -> None:
+    db.rollback()
+    job = db.get(RipJob, job_id)
+    if job is None:
+        return
+    job.status = RipJobStatus.failed
+    job.error_message = message[:1000]
+    job.finished_at = datetime.now(timezone.utc)
+    db.add(job)
+    db.commit()
+
+
+def _publish_download(
+    db: Session,
+    job: RipJob,
+    config: Settings,
+    max_track_minutes: int,
+) -> None:
+    candidate = _candidate_from_job(job)
+    max_seconds = max(1, max_track_minutes) * 60
+    media_root = Path(config.media_storage_path)
+    media_root.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory(dir=media_root) as temp_dir:
+        workdir = Path(temp_dir)
+        source = download_candidate(candidate, workdir)
+        job.status = RipJobStatus.processing
+        db.add(job)
+        db.commit()
+
+        mp3_path = convert_to_mp3(source, workdir / "track.mp3")
+        duration = probe_duration(mp3_path)
+        if duration > max_seconds:
+            raise ValueError(
+                "The downloaded track exceeds the configured maximum duration."
+            )
+
+        relative_path = f"tracks/{uuid4().hex}.mp3"
+        final_path = media_root / relative_path
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(mp3_path), final_path)
+
+        try:
+            audio_sha256 = _sha256(final_path)
+            existing = db.scalar(
+                select(Track).where(Track.audio_sha256 == audio_sha256)
+            )
+            if existing is not None:
+                job.track_id = existing.id
+                job.status = RipJobStatus.completed
+                job.error_message = None
+                job.finished_at = datetime.now(timezone.utc)
+                db.add(job)
+                db.commit()
+                final_path.unlink(missing_ok=True)
+                return
+
+            normalized_artist = normalize_text(candidate.artist or "")
+            normalized_title = normalize_text(candidate.title)
+            if not normalized_artist or not normalized_title:
+                raise ValueError("Candidate title or artist is empty.")
+
+            artist = db.scalar(
+                select(Artist).where(
+                    Artist.normalized_name == normalized_artist
+                )
+            )
+            if artist is None:
+                artist = Artist(
+                    name=candidate.artist,
+                    normalized_name=normalized_artist,
+                )
+                db.add(artist)
+                db.flush()
+
+            track = Track(
+                artist_id=artist.id,
+                album_id=None,
+                title=candidate.title,
+                normalized_title=normalized_title,
+                duration_seconds=duration,
+                file_path=relative_path,
+                mime_type="audio/mpeg",
+                source_type=TrackSource.youtube,
+                source_url=candidate.url,
+                audio_sha256=audio_sha256,
+                is_available=True,
+            )
+            db.add(track)
+            db.flush()
+            job.track_id = track.id
+            job.status = RipJobStatus.completed
+            job.error_message = None
+            job.finished_at = datetime.now(timezone.utc)
+            db.add(job)
+            db.commit()
+        except Exception:
+            db.rollback()
+            final_path.unlink(missing_ok=True)
+            raise
+
+
+def process_job(
+    db: Session,
+    job: RipJob,
+    config: Settings,
+    max_track_minutes: int,
+    llm_auto_approve: bool = False,
+) -> None:
+    job_id = job.id
+    try:
+        if job.status is RipJobStatus.searching:
+            candidates = search_candidates(job.query_text)
+            max_seconds = max(1, max_track_minutes) * 60
+            ranked = rank_candidates(job.query_text, candidates, max_seconds)
+            candidate, ambiguous = choose_candidate(
+                job.query_text, candidates, max_seconds
+            )
+            if candidate is None:
+                _fail_job(
+                    db,
+                    job_id,
+                    "No suitable candidate found within the duration limit.",
+                )
+                return
+
+            if ambiguous and llm_auto_approve:
+                eligible = [item[1] for item in ranked]
+                decision = review_candidates_with_llm(
+                    job.query_text, eligible, config
+                )
+                if decision is not None:
+                    candidate = eligible[decision.candidate_index]
+                    ambiguous = False
+                    logger.info(
+                        "LLM auto-approved import job %s with confidence %.2f: %s",
+                        job_id,
+                        decision.confidence,
+                        decision.reason,
+                    )
+
+            job.candidate_url = candidate.url
+            job.candidate_title = candidate.title
+            job.candidate_artist = candidate.artist
+            job.candidate_duration_seconds = candidate.duration_seconds
+            if ambiguous:
+                job.status = RipJobStatus.needs_review
+                job.error_message = "Ambiguous match; editor review required."
+                db.add(job)
+                db.commit()
+                return
+
+            job.status = RipJobStatus.downloading
+            db.add(job)
+            db.commit()
+
+        if job.status is not RipJobStatus.downloading:
+            return
+
+        _publish_download(db, job, config, max_track_minutes)
+    except Exception as exc:
+        logger.exception("Import job %s failed", job_id)
+        _fail_job(db, job_id, str(exc))
+
+
+def claim_next_job(db: Session) -> RipJob | None:
+    statement = (
+        select(RipJob)
+        .where(RipJob.status == RipJobStatus.queued)
+        .order_by(RipJob.created_at.asc())
+        .limit(1)
+    )
+    if db.get_bind().dialect.name != "sqlite":
+        statement = statement.with_for_update(skip_locked=True)
+    job = db.scalar(statement)
+    if job is None:
+        return None
+
+    job.started_at = datetime.now(timezone.utc)
+    if job.candidate_url:
+        job.status = RipJobStatus.downloading
+    else:
+        job.status = RipJobStatus.searching
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def process_next_job(
+    db: Session,
+    config: Settings | None = None,
+) -> RipJob | None:
+    runtime_config = config or get_settings()
+    app_settings = get_or_create_app_settings(db)
+    job = claim_next_job(db)
+    if job is None:
+        return None
+    process_job(
+        db,
+        job,
+        runtime_config,
+        app_settings.max_track_minutes,
+        app_settings.llm_auto_approve,
+    )
+    return job
+
+
+def run_worker() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    while True:
+        try:
+            with SessionLocal() as db:
+                job = process_next_job(db)
+                if job is None:
+                    time.sleep(2)
+        except Exception:
+            logger.exception("Import worker loop failed")
+            time.sleep(2)
+
+
+if __name__ == "__main__":
+    run_worker()

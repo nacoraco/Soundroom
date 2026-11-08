@@ -4,6 +4,7 @@ import { Link, useSearchParams } from "react-router-dom";
 
 import { listTracks } from "../api";
 import { useAuth } from "../auth";
+import { ImportRequest } from "../components/ImportRequest";
 import type { Track } from "../types";
 
 function formatDuration(seconds: number): string {
@@ -230,6 +231,7 @@ export function LibraryPage() {
             No matches for “{query}”.
           </h2>
           <p>Try another title or artist, or browse the full archive.</p>
+          <ImportRequest query={query} />
           <button
             type="button"
             className="button button-quiet"

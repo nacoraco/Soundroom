@@ -2,7 +2,15 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import get_settings
-from .routers import admin_users, auth, health, tracks
+from .routers import (
+    admin_settings,
+    admin_users,
+    auth,
+    editor_imports,
+    health,
+    import_jobs,
+    tracks,
+)
 
 
 def create_app() -> FastAPI:
@@ -20,6 +28,9 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(admin_users.router)
+    app.include_router(admin_settings.router)
+    app.include_router(import_jobs.router)
+    app.include_router(editor_imports.router)
     app.include_router(tracks.router)
     return app
 

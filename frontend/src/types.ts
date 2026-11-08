@@ -49,3 +49,52 @@ export interface TrackPage {
   total: number;
   total_pages: number;
 }
+
+export type ImportJobStatus =
+  | "queued"
+  | "searching"
+  | "downloading"
+  | "processing"
+  | "needs_review"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface ImportJob {
+  id: string;
+  query_text: string;
+  normalized_query: string;
+  status: ImportJobStatus;
+  candidate_url: string | null;
+  candidate_title: string | null;
+  candidate_artist: string | null;
+  candidate_duration_seconds: number | null;
+  track_id: string | null;
+  error_message: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface ImportConfig {
+  auto_rip_on_miss: boolean;
+  max_track_minutes: number;
+}
+
+export interface AppSettings {
+  auto_rip_on_miss: boolean;
+  llm_auto_approve: boolean;
+  max_track_minutes: number;
+  updated_at: string;
+}
+
+export interface AppSettingsUpdateInput {
+  auto_rip_on_miss: boolean;
+  llm_auto_approve: boolean;
+  max_track_minutes: number;
+}
+
+export interface ImportJobUpdateInput {
+  candidate_title?: string;
+  candidate_artist?: string;
+}

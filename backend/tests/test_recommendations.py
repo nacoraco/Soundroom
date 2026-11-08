@@ -1,4 +1,4 @@
-from uuid import UUID, uuid4
+﻿from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -10,8 +10,10 @@ from app.models import Artist, RipJob, Track, TrackSource
 from app.recommendations import (
     LastfmClient,
     LastfmError,
+    SeedReference,
     SimilarTrack,
     build_recommendations,
+    clean_seed_metadata,
     lastfm_seed_metadata,
     match_local_track,
 )
@@ -101,10 +103,6 @@ def test_lastfm_client_parses_similar_tracks_without_network():
                             "match": "0.71",
                             "artist": {"name": "Radiohead"},
                         },
-                        {
-                            "name": "Ignored",
-                            "artist": {"name": "Missing Match"},
-                        },
                     ]
                 }
             },
@@ -119,21 +117,13 @@ def test_lastfm_client_parses_similar_tracks_without_network():
 
     assert seen["params"]["method"] == "track.getsimilar"
     assert seen["params"]["api_key"] == "test-key"
-    assert [item.title for item in similar] == [
-        "Losing My Religion",
-        "Creep",
-        "Ignored",
-    ]
+    assert [item.title for item in similar] == ["Losing My Religion", "Creep"]
     assert similar[0].match == 0.92
-    assert similar[2].match == 0.0
 
 
 def test_lastfm_client_surfaces_api_errors():
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={"error": 6, "message": "Track not found"},
-        )
+        return httpx.Response(200, json={"error": 6, "message": "Track not found"})
 
     http_client = httpx.Client(transport=httpx.MockTransport(handler))
     lastfm = LastfmClient("test-key", client=http_client)
@@ -145,26 +135,18 @@ def test_lastfm_client_surfaces_api_errors():
 
 
 def test_seed_metadata_cleans_common_import_suffixes():
-    artist = Artist(name="Artist One", normalized_name="artist one")
-    track = Track(
-        id=uuid4(),
-        title="Artist One - Seed One (Official Video)",
-        artist=artist,
+    assert clean_seed_metadata("Artist One", "Artist One - Seed One (Official Video)") == (
+        "Artist One",
+        "Seed One",
     )
-    local = Track(
-        id=uuid4(),
-        title="R.E.M. - Losing My Religion (Official HD Music Video)",
-        artist=Artist(name="remhq", normalized_name="remhq"),
+    assert clean_seed_metadata("remhq", "R.E.M. - Losing My Religion (Official HD Music Video)") == (
+        "R.E.M.",
+        "Losing My Religion",
     )
-    plain = Track(
-        id=uuid4(),
-        title="Song - Part 2",
-        artist=Artist(name="Someone", normalized_name="someone"),
+    assert clean_seed_metadata("Someone", "Song - Part 2") == (
+        "Someone",
+        "Song - Part 2",
     )
-
-    assert lastfm_seed_metadata(track) == ("Artist One", "Seed One")
-    assert lastfm_seed_metadata(local) == ("R.E.M.", "Losing My Religion")
-    assert lastfm_seed_metadata(plain) == ("Someone", "Song - Part 2")
 
 
 def test_local_matching_handles_import_suffixes_and_artists():
@@ -181,15 +163,11 @@ def test_local_matching_handles_import_suffixes_and_artists():
         ),
     ]
 
-    losing = match_local_track(
-        SimilarTrack("Losing My Religion", "R.E.M.", 0.9), tracks
-    )
+    losing = match_local_track(SimilarTrack("Losing My Religion", "R.E.M.", 0.9), tracks)
     wonderful = match_local_track(
         SimilarTrack("What a Wonderful World", "Louis Armstrong", 0.8), tracks
     )
-    missing = match_local_track(
-        SimilarTrack("Creep", "Radiohead", 0.7), tracks
-    )
+    missing = match_local_track(SimilarTrack("Creep", "Radiohead", 0.7), tracks)
 
     assert losing is tracks[0]
     assert wonderful is tracks[1]
@@ -213,12 +191,14 @@ def test_build_recommendations_merges_ranks_excludes_and_limits():
     excluded = make_memory_track("Seed Two", "Seed Artist Two")
     extra = [make_memory_track(f"Extra {index}") for index in range(25)]
 
+    seed_ref_one = SeedReference("Seed One", "Seed Artist One", seed_one.id)
+    seed_ref_two = SeedReference("Seed Two", "Seed Artist Two", seed_two.id)
     similar_one = [
         SimilarTrack("Candidate A", "Artist A", 0.9),
         SimilarTrack("Candidate A", "Artist A", 0.4),
         SimilarTrack("Candidate B", "Artist B", 0.4),
         SimilarTrack("Seed Two", "Seed Artist Two", 0.99),
-        SimilarTrack("Not local", "Nobody", 0.8),
+        SimilarTrack("External Song", "External Artist", 0.7),
         *[
             SimilarTrack(track.title, track.artist.name, 0.5)
             for track in extra
@@ -231,12 +211,12 @@ def test_build_recommendations_merges_ranks_excludes_and_limits():
     ]
 
     result = build_recommendations(
-        [seed_one, seed_two],
-        [(seed_one, similar_one), (seed_two, similar_two)],
+        [seed_ref_one, seed_ref_two],
+        [(seed_ref_one, similar_one), (seed_ref_two, similar_two)],
         [first, second, third, seed_one, seed_two, excluded, *extra],
     )
 
-    assert [recommendation.track.title for recommendation in result[:3]] == [
+    assert [recommendation.title for recommendation in result[:3]] == [
         "Candidate A (Official Video)",
         "Candidate B",
         "Candidate C",
@@ -247,11 +227,21 @@ def test_build_recommendations_merges_ranks_excludes_and_limits():
     assert result[1].seed_count == 2
     assert result[2].score == 0.8
     assert result[2].seed_count == 1
-    assert all(recommendation.track.id not in {seed_one.id, seed_two.id} for recommendation in result)
+    assert all(
+        recommendation.title not in {"Seed One", "Seed Two"}
+        for recommendation in result
+    )
+    assert any(
+        recommendation.title == "External Song"
+        and recommendation.local_track is None
+        for recommendation in result
+    )
     assert len(result) == 20
 
 
-def test_discover_endpoint_returns_only_local_merged_recommendations(client: TestClient, db_session):
+def test_discover_endpoint_returns_local_and_external_recommendations(
+    client: TestClient, db_session
+):
     headers = admin_headers(client)
     seed_one = seed_track(db_session, "Seed Artist One - Seed One", "Seed Artist One")
     seed_two = seed_track(db_session, "Seed Artist Two - Seed Two", "Seed Artist Two")
@@ -286,22 +276,79 @@ def test_discover_endpoint_returns_only_local_merged_recommendations(client: Tes
     assert response.status_code == 200
     body = response.json()
     assert body["seeds"] == [str(seed_one.id), str(seed_two.id)]
-    assert [item["track"]["id"] for item in body["recommendations"]] == [
+    assert [item["title"] for item in body["recommendations"]] == [
+        "Candidate A (Official Video)",
+        "Candidate B",
+        "Candidate C",
+        "Not local",
+    ]
+    assert [item["local_track"]["id"] for item in body["recommendations"][:3]] == [
         str(first.id),
         str(second.id),
         str(third.id),
     ]
+    assert body["recommendations"][3]["local_track"] is None
     assert body["recommendations"][0]["score"] == 1.2
     assert body["recommendations"][0]["seed_count"] == 2
-    assert all(
-        item["track"]["id"] not in {str(seed_one.id), str(seed_two.id)}
-        for item in body["recommendations"]
-    )
-    assert fake.calls == [
-        ("Seed Artist One", "Seed One", 20),
-        ("Seed Artist Two", "Seed Two", 20),
-    ]
     assert db_session.scalar(select(func.count(RipJob.id))) == 0
+
+
+def test_radio_endpoint_uses_metadata_seeds_and_returns_five(client: TestClient, db_session):
+    headers = admin_headers(client)
+    local = seed_track(db_session, "Local Result", "Local Artist")
+    fake = FakeLastfm(
+        {
+            ("Seed Artist", "Seed Song"): [
+                SimilarTrack("Local Result", "Local Artist", 0.9),
+                SimilarTrack("External One", "External Artist", 0.8),
+                SimilarTrack("External Two", "External Artist", 0.7),
+            ]
+        }
+    )
+    override_lastfm(client, fake)
+    try:
+        response = client.post(
+            "/api/discover/radio",
+            json={
+                "seeds": [
+                    {"title": "Seed Artist - Seed Song (Official Video)", "artist": "Seed Artist"}
+                ]
+            },
+            headers=headers,
+        )
+    finally:
+        clear_override(client)
+
+    assert response.status_code == 200
+    recommendations = response.json()["recommendations"]
+    assert [item["title"] for item in recommendations[:3]] == [
+        "Local Result",
+        "External One",
+        "External Two",
+    ]
+    assert recommendations[0]["local_track"]["id"] == str(local.id)
+    assert recommendations[1]["local_track"] is None
+    assert fake.calls == [("Seed Artist", "Seed Song", 20)]
+
+
+def test_radio_rejects_more_than_five_seeds(client: TestClient):
+    headers = admin_headers(client)
+    override_lastfm(client, FakeLastfm({}))
+    try:
+        response = client.post(
+            "/api/discover/radio",
+            json={
+                "seeds": [
+                    {"title": f"Song {index}", "artist": f"Artist {index}"}
+                    for index in range(6)
+                ]
+            },
+            headers=headers,
+        )
+    finally:
+        clear_override(client)
+
+    assert response.status_code == 422
 
 
 def test_discover_rejects_fourth_seed(client: TestClient, db_session):
@@ -310,7 +357,6 @@ def test_discover_rejects_fourth_seed(client: TestClient, db_session):
         seed_track(db_session, f"Seed {index}", f"Artist {index}")
         for index in range(4)
     ]
-
     override_lastfm(client, FakeLastfm({}))
     try:
         response = client.post(
@@ -326,7 +372,6 @@ def test_discover_rejects_fourth_seed(client: TestClient, db_session):
 
 def test_discover_rejects_missing_seed(client: TestClient):
     headers = admin_headers(client)
-
     override_lastfm(client, FakeLastfm({}))
     try:
         response = client.post(

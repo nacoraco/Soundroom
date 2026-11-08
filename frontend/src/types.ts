@@ -152,7 +152,9 @@ export interface PlaylistCreateInput {
 }
 
 export interface DiscoverRecommendation {
-  track: Track;
+  title: string;
+  artist: string;
+  local_track: Track | null;
   score: number;
   seed_count: number;
 }

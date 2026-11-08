@@ -25,10 +25,25 @@ class SimilarTrack:
 
 
 @dataclass(frozen=True)
+class SeedReference:
+    title: str
+    artist: str
+    track_id: object | None = None
+
+    @property
+    def key(self) -> str:
+        if self.track_id is not None:
+            return f"local:{self.track_id}"
+        return f"external:{normalize_text(self.title)}|{normalize_text(self.artist)}"
+
+
+@dataclass(frozen=True)
 class Recommendation:
-    track: Track
+    title: str
+    artist: str
     score: float
     seed_count: int
+    local_track: Track | None
 
 
 class LastfmClient:
@@ -94,7 +109,11 @@ class LastfmClient:
             if isinstance(payload, dict)
             else {}
         )
-        raw_tracks = container.get("track", []) if isinstance(container, dict) else []
+        raw_tracks = (
+            container.get("track", [])
+            if isinstance(container, dict)
+            else []
+        )
         if isinstance(raw_tracks, dict):
             raw_tracks = [raw_tracks]
 
@@ -140,9 +159,9 @@ def _strip_trailing_brackets(value: str) -> str:
     return result
 
 
-def lastfm_seed_metadata(track: Track) -> tuple[str, str]:
-    artist = track.artist.name.strip()
-    title = _strip_trailing_brackets(track.title)
+def clean_seed_metadata(artist: str, title: str) -> tuple[str, str]:
+    artist = artist.strip()
+    title = _strip_trailing_brackets(title)
 
     if " - " in title:
         prefix, suffix = title.split(" - ", 1)
@@ -162,7 +181,11 @@ def lastfm_seed_metadata(track: Track) -> tuple[str, str]:
         ):
             return prefix, suffix
 
-    return artist, title or track.title
+    return artist, title or title.strip()
+
+
+def lastfm_seed_metadata(track: Track) -> tuple[str, str]:
+    return clean_seed_metadata(track.artist.name, track.title)
 
 
 def _match_quality(similar: SimilarTrack, track: Track) -> float:
@@ -223,54 +246,73 @@ def match_local_track(
 
 
 def build_recommendations(
-    seed_tracks: list[Track],
-    similar_by_seed: list[tuple[Track, list[SimilarTrack]]],
+    seed_refs: list[SeedReference],
+    similar_by_seed: list[tuple[SeedReference, list[SimilarTrack]]],
     local_tracks: list[Track],
+    limit: int = RESULT_LIMIT,
 ) -> list[Recommendation]:
-    seed_ids = {track.id for track in seed_tracks}
-    seed_keys = {
-        (normalize_text(track.title), normalize_text(track.artist.name))
-        for track in seed_tracks
+    seed_ids = {
+        seed.track_id for seed in seed_refs if seed.track_id is not None
     }
-    scores: dict[object, float] = {}
-    seed_counts: dict[object, set[object]] = {}
-    tracks_by_id: dict[object, Track] = {}
+    seed_keys = {
+        (normalize_text(seed.title), normalize_text(seed.artist))
+        for seed in seed_refs
+    }
+    scores: dict[str, float] = {}
+    seed_counts: dict[str, set[str]] = {}
+    entries: dict[str, tuple[str, str, Track | None]] = {}
 
     for seed, similar_tracks in similar_by_seed:
-        matched: dict[object, float] = {}
+        matched: dict[str, float] = {}
         for similar in similar_tracks:
             local_track = match_local_track(similar, local_tracks)
-            if local_track is None or local_track.id in seed_ids:
+            candidate_key = (
+                normalize_text(similar.title),
+                normalize_text(similar.artist),
+            )
+            if candidate_key in seed_keys:
                 continue
-            if (
+            if local_track is not None and local_track.id in seed_ids:
+                continue
+            if local_track is not None and (
                 normalize_text(local_track.title),
                 normalize_text(local_track.artist.name),
             ) in seed_keys:
                 continue
-            matched[local_track.id] = max(
-                matched.get(local_track.id, 0.0),
-                similar.match,
-            )
-            tracks_by_id[local_track.id] = local_track
 
-        for track_id, match in matched.items():
-            scores[track_id] = scores.get(track_id, 0.0) + match
-            seed_counts.setdefault(track_id, set()).add(seed.id)
+            if local_track is not None:
+                key = f"local:{local_track.id}"
+                title = local_track.title
+                artist = local_track.artist.name
+            else:
+                key = f"external:{candidate_key[0]}|{candidate_key[1]}"
+                title = similar.title
+                artist = similar.artist
+
+            matched[key] = max(matched.get(key, 0.0), similar.match)
+            entries[key] = (title, artist, local_track)
+
+        for key, match in matched.items():
+            scores[key] = scores.get(key, 0.0) + match
+            seed_counts.setdefault(key, set()).add(seed.key)
 
     ranked = sorted(
-        tracks_by_id.values(),
-        key=lambda track: (
-            -scores[track.id],
-            -len(seed_counts[track.id]),
-            normalize_text(track.title),
-            str(track.id),
+        entries,
+        key=lambda key: (
+            -scores[key],
+            -len(seed_counts[key]),
+            normalize_text(entries[key][0]),
+            normalize_text(entries[key][1]),
+            key,
         ),
     )
     return [
         Recommendation(
-            track=track,
-            score=round(scores[track.id], 4),
-            seed_count=len(seed_counts[track.id]),
+            title=entries[key][0],
+            artist=entries[key][1],
+            score=round(scores[key], 4),
+            seed_count=len(seed_counts[key]),
+            local_track=entries[key][2],
         )
-        for track in ranked[:RESULT_LIMIT]
+        for key in ranked[:limit]
     ]

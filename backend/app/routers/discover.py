@@ -10,16 +10,20 @@ from ..db import get_db
 from ..deps import AuthContext, require_csrf
 from ..models import Track
 from ..recommendations import (
+    RESULT_LIMIT,
     SIMILAR_LIMIT,
     LastfmClient,
     LastfmError,
+    SeedReference,
     build_recommendations,
-    lastfm_seed_metadata,
+    clean_seed_metadata,
 )
 from ..schemas import (
     DiscoverRecommendation,
     DiscoverRequest,
     DiscoverResponse,
+    RadioRequest,
+    RadioResponse,
     TrackOut,
 )
 
@@ -43,6 +47,20 @@ def _track_out(track: Track) -> TrackOut:
     )
 
 
+def _recommendation_out(recommendation) -> DiscoverRecommendation:
+    return DiscoverRecommendation(
+        title=recommendation.title,
+        artist=recommendation.artist,
+        local_track=(
+            _track_out(recommendation.local_track)
+            if recommendation.local_track is not None
+            else None
+        ),
+        score=recommendation.score,
+        seed_count=recommendation.seed_count,
+    )
+
+
 def get_lastfm_client(
     settings: Settings = Depends(get_settings),
 ) -> Iterator[LastfmClient]:
@@ -60,6 +78,25 @@ def get_lastfm_client(
         yield client
     finally:
         client.close()
+
+
+def _load_local_tracks(db: Session) -> list[Track]:
+    return list(
+        db.scalars(
+            select(Track)
+            .options(joinedload(Track.artist), joinedload(Track.album))
+            .where(Track.is_available.is_(True))
+            .order_by(Track.id)
+        ).all()
+    )
+
+
+def _lastfm_failure(exc: Exception) -> HTTPException:
+    logger.warning("Last.fm recommendation request failed: %s", exc)
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Last.fm recommendations are temporarily unavailable.",
+    )
 
 
 @router.post("/similar", response_model=DiscoverResponse)
@@ -85,43 +122,81 @@ def discover_similar(
 
     seeds_by_id = {seed.id: seed for seed in seeds}
     ordered_seeds = [seeds_by_id[track_id] for track_id in payload.seed_track_ids]
-    local_tracks = db.scalars(
-        select(Track)
-        .options(joinedload(Track.artist), joinedload(Track.album))
-        .where(Track.is_available.is_(True))
-        .order_by(Track.id)
-    ).all()
-
+    seed_refs = [
+        SeedReference(
+            title=clean_seed_metadata(seed.artist.name, seed.title)[1],
+            artist=clean_seed_metadata(seed.artist.name, seed.title)[0],
+            track_id=seed.id,
+        )
+        for seed in ordered_seeds
+    ]
     similar_by_seed = []
     try:
-        for seed in ordered_seeds:
-            artist, title = lastfm_seed_metadata(seed)
+        for seed, seed_ref in zip(ordered_seeds, seed_refs):
+            artist, title = clean_seed_metadata(seed.artist.name, seed.title)
             similar_by_seed.append(
                 (
-                    seed,
+                    seed_ref,
                     client.get_similar(artist, title, limit=SIMILAR_LIMIT),
                 )
             )
     except LastfmError as exc:
-        logger.warning("Last.fm recommendation request failed: %s", exc)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Last.fm recommendations are temporarily unavailable.",
-        ) from exc
+        raise _lastfm_failure(exc) from exc
 
     recommendations = build_recommendations(
-        ordered_seeds,
+        seed_refs,
         similar_by_seed,
-        list(local_tracks),
+        _load_local_tracks(db),
+        limit=RESULT_LIMIT,
     )
     return DiscoverResponse(
         seeds=payload.seed_track_ids,
         recommendations=[
-            DiscoverRecommendation(
-                track=_track_out(recommendation.track),
-                score=recommendation.score,
-                seed_count=recommendation.seed_count,
+            _recommendation_out(recommendation)
+            for recommendation in recommendations
+        ],
+    )
+
+
+@router.post("/radio", response_model=RadioResponse)
+def discover_radio(
+    payload: RadioRequest,
+    _: AuthContext = Depends(require_csrf),
+    db: Session = Depends(get_db),
+    client: LastfmClient = Depends(get_lastfm_client),
+) -> RadioResponse:
+    seed_refs = [
+        SeedReference(
+            title=clean_seed_metadata(seed.artist, seed.title)[1],
+            artist=clean_seed_metadata(seed.artist, seed.title)[0],
+        )
+        for seed in payload.seeds
+    ]
+    similar_by_seed = []
+    try:
+        for seed_ref in seed_refs:
+            similar_by_seed.append(
+                (
+                    seed_ref,
+                    client.get_similar(
+                        seed_ref.artist,
+                        seed_ref.title,
+                        limit=SIMILAR_LIMIT,
+                    ),
+                )
             )
+    except LastfmError as exc:
+        raise _lastfm_failure(exc) from exc
+
+    recommendations = build_recommendations(
+        seed_refs,
+        similar_by_seed,
+        _load_local_tracks(db),
+        limit=5,
+    )
+    return RadioResponse(
+        recommendations=[
+            _recommendation_out(recommendation)
             for recommendation in recommendations
         ],
     )

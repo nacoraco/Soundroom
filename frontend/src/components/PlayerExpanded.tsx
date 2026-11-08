@@ -100,7 +100,9 @@ export function PlayerExpanded() {
               <div className="player-art-pending-overlay">
                 <span className="eyebrow">Incoming release</span>
                 <span className="player-art-pending-status">
-                  {importStatusLabel(state.importStatus)}
+                  {importStatusLabel(
+                    currentTrack.pending_status ?? state.importStatus,
+                  )}
                 </span>
               </div>
             </div>
@@ -138,7 +140,11 @@ export function PlayerExpanded() {
             {isPending && (
               <div className="player-import-state" role="status">
                 <span className="player-loader" aria-hidden="true" />
-                <span>{importStatusLabel(state.importStatus)}</span>
+                <span>
+                  {importStatusLabel(
+                    currentTrack.pending_status ?? state.importStatus,
+                  )}
+                </span>
               </div>
             )}
           </div>
@@ -241,10 +247,12 @@ export function PlayerExpanded() {
             </span>
           </div>
 
-          {(state.importError || state.error) && (
+          {(currentTrack.pending_error || state.importError || state.error) && (
             <div className="player-expanded-error" role="alert">
-              <span>{state.importError ?? state.error}</span>
-              {state.importError && (
+              <span>
+                {currentTrack.pending_error ?? state.importError ?? state.error}
+              </span>
+              {(currentTrack.pending_error || state.importError) && (
                 <button
                   type="button"
                   className="button button-quiet button-small"
@@ -305,7 +313,12 @@ export function PlayerExpanded() {
                       </span>
                       <span className="player-queue-copy">
                         <strong>{track.title}</strong>
-                        <span>{track.artist_name}</span>
+                        <span>
+                          {track.pending
+                            ? (track.pending_error ??
+                              importStatusLabel(track.pending_status ?? null))
+                            : track.artist_name}
+                        </span>
                       </span>
                       <span className="player-queue-duration mono">
                         {formatTime(track.duration_seconds)}

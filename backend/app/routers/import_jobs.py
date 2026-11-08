@@ -159,6 +159,7 @@ def create_import_job(
         query_text=payload.query,
         normalized_query=normalized_query,
         status=RipJobStatus.queued,
+        force_llm_approval=payload.force_llm_approval,
     )
     if payload.candidate is not None and candidate_url is not None:
         job.candidate_url = candidate_url

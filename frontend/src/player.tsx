@@ -11,7 +11,12 @@ import {
   type ReactNode,
 } from "react";
 
-import { createImportJob, getImportJob, getTrack } from "./api";
+import {
+  createImportJob,
+  discoverRadio,
+  getImportJob,
+  getTrack,
+} from "./api";
 import { ACTIVE_IMPORT_STATUSES } from "./importStatus";
 import {
   initialPlayerState,
@@ -20,6 +25,7 @@ import {
   type PlayerTrack,
 } from "./playerState";
 import type {
+  DiscoverRecommendation,
   ImportJobStatus,
   ImportPreviewCandidate,
   Track,
@@ -50,6 +56,9 @@ interface PlayerContextValue {
   ) => Promise<boolean>;
   queuedImports: QueuedImport[];
   dismissQueuedImport: (id: string) => void;
+  queueExternalRecommendation: (
+    recommendation: DiscoverRecommendation,
+  ) => Promise<void>;
   enqueue: (track: Track) => boolean;
   toggle: () => void;
   next: () => void;
@@ -70,9 +79,21 @@ const PlayerContext = createContext<PlayerContextValue | null>(null);
 export function PlayerProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(playerReducer, initialPlayerState);
   const [queuedImports, setQueuedImports] = useState<QueuedImport[]>([]);
+  const [manualRevision, setManualRevision] = useState(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const importRequestRef = useRef(0);
   const aliveRef = useRef(true);
+  const radioEnabledRef = useRef(false);
+  const radioInitialSeedRef = useRef<{
+    title: string;
+    artist: string;
+  } | null>(null);
+  const radioGeneratedRef = useRef(0);
+  const radioRequestRef = useRef(0);
+  const radioInFlightRef = useRef(false);
+  const manualRefreshPendingRef = useRef(false);
+  const stateRef = useRef(state);
+  stateRef.current = state;
   const queryClient = useQueryClient();
 
   useEffect(() => {
@@ -160,7 +181,256 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     }
   }, [completedTrackQuery.isError, pendingJobId]);
 
+  const startPendingQueryImport = useCallback(
+    async (pendingId: string, title: string, artist: string) => {
+      try {
+        const job = await createImportJob(
+          `${artist} ${title}`.trim(),
+          undefined,
+          true,
+        );
+        if (!aliveRef.current) {
+          return;
+        }
+        dispatch({
+          type: "setPendingJob",
+          pendingId,
+          jobId: job.id,
+          status: job.status,
+        });
+
+        async function poll() {
+          while (aliveRef.current) {
+            let current;
+            try {
+              current = await getImportJob(job.id);
+            } catch (error) {
+              if (aliveRef.current) {
+                dispatch({
+                  type: "setPendingState",
+                  pendingId,
+                  status: "failed",
+                  error:
+                    error instanceof Error
+                      ? error.message
+                      : "The import status could not be loaded.",
+                });
+              }
+              return;
+            }
+            if (!aliveRef.current) {
+              return;
+            }
+            dispatch({
+              type: "setPendingState",
+              pendingId,
+              status: current.status,
+              error:
+                current.status === "failed"
+                  ? (current.error_message ?? "The import failed.")
+                  : current.status === "cancelled"
+                    ? "The import was cancelled."
+                    : null,
+            });
+
+            if (current.status === "completed") {
+              if (!current.track_id) {
+                dispatch({
+                  type: "setPendingState",
+                  pendingId,
+                  status: "failed",
+                  error: "The imported recording could not be located.",
+                });
+                return;
+              }
+              try {
+                const track = await getTrack(current.track_id);
+                if (!aliveRef.current) {
+                  return;
+                }
+                dispatch({ type: "replacePending", pendingId, track });
+                queryClient.invalidateQueries({ queryKey: ["tracks"] });
+              } catch (error) {
+                dispatch({
+                  type: "setPendingState",
+                  pendingId,
+                  status: "failed",
+                  error:
+                    error instanceof Error
+                      ? error.message
+                      : "The imported recording could not be loaded.",
+                });
+              }
+              return;
+            }
+
+            if (
+              current.status === "failed" ||
+              current.status === "cancelled"
+            ) {
+              return;
+            }
+
+            await new Promise((resolve) =>
+              window.setTimeout(resolve, 2000),
+            );
+          }
+        }
+
+        void poll();
+      } catch (error) {
+        if (aliveRef.current) {
+          dispatch({
+            type: "setPendingState",
+            pendingId,
+            status: "failed",
+            error:
+              error instanceof Error
+                ? error.message
+                : "The import could not be requested.",
+          });
+        }
+      }
+    },
+    [queryClient],
+  );
+
+  const generateRadio = useCallback(
+    async (
+      seeds: Array<{ title: string; artist: string }>,
+      replace: boolean,
+    ) => {
+      if (!radioEnabledRef.current) {
+        return;
+      }
+      const usableSeeds = seeds
+        .filter((seed) => seed.title.trim() && seed.artist.trim())
+        .slice(-5);
+      if (usableSeeds.length === 0) {
+        return;
+      }
+
+      let requestSeeds = usableSeeds;
+      if (radioGeneratedRef.current >= 100) {
+        radioGeneratedRef.current = 0;
+        if (radioInitialSeedRef.current) {
+          requestSeeds = [radioInitialSeedRef.current];
+        }
+      }
+      const requestId = radioRequestRef.current + 1;
+      radioRequestRef.current = requestId;
+
+      try {
+        const result = await discoverRadio(requestSeeds);
+        if (
+          !aliveRef.current ||
+          requestId !== radioRequestRef.current ||
+          !radioEnabledRef.current
+        ) {
+          return;
+        }
+        const remaining = Math.max(0, 100 - radioGeneratedRef.current);
+        if (remaining === 0) {
+          radioGeneratedRef.current = 0;
+        }
+        const snapshot = stateRef.current;
+        const baseQueue = replace
+          ? snapshot.queue.filter(
+              (track, index) =>
+                index <= snapshot.currentIndex || track.origin !== "auto",
+            )
+          : snapshot.queue;
+        const existingIds = new Set(baseQueue.map((track) => track.id));
+        const existingExternal = new Set(
+          baseQueue.map(
+            (track) =>
+              `${track.title.trim().toLowerCase()}|${track.artist_name.trim().toLowerCase()}`,
+          ),
+        );
+        const candidates = result.recommendations.filter((recommendation) => {
+          if (recommendation.local_track) {
+            return !existingIds.has(recommendation.local_track.id);
+          }
+          const key = `${recommendation.title
+            .trim()
+            .toLowerCase()}|${recommendation.artist.trim().toLowerCase()}`;
+          return !existingExternal.has(key);
+        });
+        const recommendations = candidates.slice(
+          0,
+          Math.min(5, remaining || 5),
+        );
+        if (recommendations.length === 0) {
+          return;
+        }
+
+        const autoTracks: PlayerTrack[] = [];
+        const pendingJobs: Array<{
+          pendingId: string;
+          title: string;
+          artist: string;
+        }> = [];
+        recommendations.forEach((recommendation, index) => {
+          if (recommendation.local_track) {
+            autoTracks.push({
+              ...recommendation.local_track,
+              origin: "auto",
+            });
+            return;
+          }
+          const pendingId = `auto-import-${Date.now()}-${index}`;
+          autoTracks.push({
+            id: pendingId,
+            title: recommendation.title,
+            artist_name: recommendation.artist,
+            album_title: null,
+            release_year: null,
+            duration_seconds: 0,
+            mime_type: "audio/mpeg",
+            source_type: "youtube",
+            is_available: false,
+            created_at: new Date().toISOString(),
+            pending: true,
+            origin: "auto",
+            pending_status: null,
+            pending_error: null,
+          });
+          pendingJobs.push({
+            pendingId,
+            title: recommendation.title,
+            artist: recommendation.artist,
+          });
+        });
+
+        dispatch({
+          type: replace ? "replaceUpcomingAuto" : "appendAuto",
+          tracks: autoTracks,
+        });
+        radioGeneratedRef.current += autoTracks.length;
+        for (const pending of pendingJobs) {
+          void startPendingQueryImport(
+            pending.pendingId,
+            pending.title,
+            pending.artist,
+          );
+        }
+      } catch {
+        // Playback and the existing queue stay usable when Last.fm is down.
+      }
+    },
+    [startPendingQueryImport],
+  );
+
   const playTrack = useCallback((track: Track, queue?: Track[]) => {
+    radioEnabledRef.current = true;
+    radioInitialSeedRef.current = {
+      title: track.title,
+      artist: track.artist_name,
+    };
+    radioGeneratedRef.current = 0;
+    radioRequestRef.current += 1;
+    radioInFlightRef.current = false;
+    manualRefreshPendingRef.current = false;
     dispatch({ type: "play", track, queue });
   }, []);
 
@@ -171,6 +441,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       }
       const requestId = importRequestRef.current + 1;
       importRequestRef.current = requestId;
+      radioEnabledRef.current = true;
+      radioInitialSeedRef.current = {
+        title: candidate.title,
+        artist: candidate.artist,
+      };
+      radioGeneratedRef.current = 0;
+      radioRequestRef.current += 1;
+      radioInFlightRef.current = false;
       const pendingTrack: PlayerTrack = {
         id: `import-${candidate.video_id}`,
         title: candidate.title,
@@ -373,9 +651,51 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         return false;
       }
       dispatch({ type: "enqueue", track });
+      if (radioEnabledRef.current) {
+        manualRefreshPendingRef.current = true;
+        setManualRevision((revision) => revision + 1);
+      }
       return true;
     },
     [state.queue],
+  );
+
+  const queueExternalRecommendation = useCallback(
+    async (recommendation: DiscoverRecommendation) => {
+      if (recommendation.local_track) {
+        enqueue(recommendation.local_track);
+        return;
+      }
+      const pendingId = `discover-import-${Date.now()}`;
+      dispatch({
+        type: "enqueue",
+        track: {
+          id: pendingId,
+          title: recommendation.title,
+          artist_name: recommendation.artist,
+          album_title: null,
+          release_year: null,
+          duration_seconds: 0,
+          mime_type: "audio/mpeg",
+          source_type: "youtube",
+          is_available: false,
+          created_at: new Date().toISOString(),
+          pending: true,
+          pending_status: null,
+          pending_error: null,
+        },
+      });
+      if (radioEnabledRef.current) {
+        manualRefreshPendingRef.current = true;
+        setManualRevision((revision) => revision + 1);
+      }
+      void startPendingQueryImport(
+        pendingId,
+        recommendation.title,
+        recommendation.artist,
+      );
+    },
+    [enqueue, startPendingQueryImport],
   );
 
   const toggle = useCallback(() => {
@@ -421,6 +741,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   );
 
   const clearQueue = useCallback(() => {
+    radioEnabledRef.current = false;
+    radioRequestRef.current += 1;
+    radioInFlightRef.current = false;
+    manualRefreshPendingRef.current = false;
     dispatch({ type: "clear" });
   }, []);
 
@@ -617,6 +941,72 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     }
   }, [currentTrack, state.currentTime, state.duration]);
 
+  useEffect(() => {
+    if (!radioEnabledRef.current || manualRevision === 0) {
+      return;
+    }
+    const timer = window.setTimeout(async () => {
+      const snapshot = stateRef.current;
+      const current = snapshot.queue[snapshot.currentIndex];
+      if (!current) {
+        manualRefreshPendingRef.current = false;
+        return;
+      }
+      const manuals = snapshot.queue
+        .slice(snapshot.currentIndex + 1)
+        .filter((track) => track.origin !== "auto" && !track.pending)
+        .slice(0, 4);
+      const seeds = [current, ...manuals]
+        .filter((track) => !track.pending)
+        .map((track) => ({
+          title: track.title,
+          artist: track.artist_name,
+        }))
+        .slice(0, 5);
+      if (seeds.length > 0) {
+        await generateRadio(seeds, true);
+      }
+      manualRefreshPendingRef.current = false;
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [generateRadio, manualRevision]);
+
+  useEffect(() => {
+    if (
+      !radioEnabledRef.current ||
+      manualRefreshPendingRef.current ||
+      radioInFlightRef.current
+    ) {
+      return;
+    }
+    const snapshot = stateRef.current;
+    const current = snapshot.queue[snapshot.currentIndex];
+    if (!current || current.pending) {
+      return;
+    }
+    const autoAhead = snapshot.queue
+      .slice(snapshot.currentIndex + 1)
+      .some((track) => track.origin === "auto");
+    if (autoAhead) {
+      return;
+    }
+
+    const recentAuto = snapshot.queue
+      .slice(0, snapshot.currentIndex + 1)
+      .filter((track) => track.origin === "auto" && !track.pending)
+      .slice(-5);
+    const seeds = (recentAuto.length > 0 ? recentAuto : [current]).map(
+      (track) => ({
+        title: track.title,
+        artist: track.artist_name,
+      }),
+    );
+    radioInFlightRef.current = true;
+    void generateRadio(seeds, false).finally(() => {
+      radioInFlightRef.current = false;
+    });
+  }, [generateRadio, state.currentIndex, state.queue, currentTrack?.id]);
+
   const value = useMemo<PlayerContextValue>(
     () => ({
       state,
@@ -626,6 +1016,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       queueImport,
       queuedImports,
       dismissQueuedImport,
+      queueExternalRecommendation,
       enqueue,
       toggle,
       next,
@@ -650,6 +1041,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       playAt,
       playTrack,
       previous,
+      queueExternalRecommendation,
       queueImport,
       queuedImports,
       removeAt,

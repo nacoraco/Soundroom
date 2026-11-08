@@ -9,8 +9,11 @@ import { Link, useNavigate } from "react-router-dom";
 import {
   ApiError,
   addPlaylistItem,
+  createImportJob,
   createPlaylist,
   discoverSimilar,
+  getImportJob,
+  getTrack,
   listTracks,
 } from "../api";
 import { usePlayer } from "../player";
@@ -33,10 +36,28 @@ function matchPercent(recommendation: DiscoverRecommendation): number {
   );
 }
 
+async function waitForImport(jobId: string): Promise<Track> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 5 * 60 * 1000) {
+    const job = await getImportJob(jobId);
+    if (job.status === "completed") {
+      if (!job.track_id) {
+        throw new Error("The downloaded track could not be located.");
+      }
+      return getTrack(job.track_id);
+    }
+    if (job.status === "failed" || job.status === "cancelled") {
+      throw new Error(job.error_message ?? "The download did not complete.");
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 2000));
+  }
+  throw new Error("The download timed out. Try saving again.");
+}
+
 export function DiscoverPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const { playTrack, enqueue } = usePlayer();
+  const { playTrack, enqueue, queueExternalRecommendation } = usePlayer();
   const [seeds, setSeeds] = useState<Track[]>([]);
   const [searchInput, setSearchInput] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
@@ -75,21 +96,35 @@ export function DiscoverPage() {
       const playlist = await createPlaylist({
         name: playlistName.trim() || "Similar discoveries",
       });
+      const resolved: Track[] = [];
       for (const recommendation of recommendations) {
-        await addPlaylistItem(playlist.id, recommendation.track.id);
+        let track = recommendation.local_track;
+        if (!track) {
+          const job = await createImportJob(
+            `${recommendation.artist} ${recommendation.title}`.trim(),
+            undefined,
+            true,
+          );
+          track = await waitForImport(job.id);
+        }
+        await addPlaylistItem(playlist.id, track.id);
+        resolved.push(track);
       }
-      return playlist;
+      return { playlist, tracks: resolved };
     },
-    onSuccess: (playlist) => {
+    onSuccess: ({ playlist, tracks }) => {
+      for (const track of tracks) {
+        enqueue(track);
+      }
       queryClient.invalidateQueries({ queryKey: ["playlists"] });
       navigate(`/playlists/${playlist.id}`);
     },
   });
 
   const recommendations = discoverMutation.data?.recommendations ?? [];
-  const resultTracks = recommendations.map(
-    (recommendation) => recommendation.track,
-  );
+  const resultTracks = recommendations
+    .map((recommendation) => recommendation.local_track)
+    .filter((track): track is Track => track !== null);
   const canAddSeed = seeds.length < 3;
 
   function addSeed(track: Track) {
@@ -287,7 +322,8 @@ export function DiscoverPage() {
               <h2>Nothing adjacent found in the archive.</h2>
               <p>
                 Try different seeds, or search the library for a recording you
-                want to listen to. Nothing will be imported automatically.
+                want to listen to. Recommendations are only downloaded when
+                you queue or save them.
               </p>
               <Link className="button button-quiet" to="/library">
                 Go to search
@@ -300,14 +336,23 @@ export function DiscoverPage() {
               <ol className="discover-list">
                 {recommendations.map((recommendation, index) => {
                   const percent = matchPercent(recommendation);
+                  const localTrack = recommendation.local_track;
+                  const key = localTrack
+                    ? `local-${localTrack.id}`
+                    : `external-${recommendation.title}-${recommendation.artist}`;
                   return (
-                    <li className="discover-item" key={recommendation.track.id}>
+                    <li className="discover-item" key={key}>
                       <span className="discover-item-index mono">
                         {String(index + 1).padStart(2, "0")}
                       </span>
                       <span className="discover-item-copy">
-                        <strong>{recommendation.track.title}</strong>
-                        <span>{recommendation.track.artist_name}</span>
+                        <strong>
+                          {localTrack?.title ?? recommendation.title}
+                        </strong>
+                        <span>
+                          {localTrack?.artist_name ?? recommendation.artist}
+                          {localTrack ? " · in library" : " · will download"}
+                        </span>
                       </span>
                       <span className="discover-match">
                         <strong>{percent}%</strong>
@@ -317,22 +362,34 @@ export function DiscoverPage() {
                         </span>
                       </span>
                       <span className="discover-item-actions">
-                        <button
-                          type="button"
-                          className="button button-quiet button-small"
-                          onClick={() =>
-                            playTrack(recommendation.track, resultTracks)
-                          }
-                        >
-                          Play
-                        </button>
-                        <button
-                          type="button"
-                          className="button button-quiet button-small"
-                          onClick={() => enqueue(recommendation.track)}
-                        >
-                          + Queue
-                        </button>
+                        {localTrack ? (
+                          <>
+                            <button
+                              type="button"
+                              className="button button-quiet button-small"
+                              onClick={() => playTrack(localTrack, resultTracks)}
+                            >
+                              Play
+                            </button>
+                            <button
+                              type="button"
+                              className="button button-quiet button-small"
+                              onClick={() => enqueue(localTrack)}
+                            >
+                              + Queue
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            className="button button-quiet button-small"
+                            onClick={() =>
+                              void queueExternalRecommendation(recommendation)
+                            }
+                          >
+                            Download + queue
+                          </button>
+                        )}
                       </span>
                     </li>
                   );
@@ -360,7 +417,9 @@ export function DiscoverPage() {
                     !playlistName.trim()
                   }
                 >
-                  {saveMutation.isPending ? "Saving…" : "Save as playlist"}
+                  {saveMutation.isPending
+                    ? "Saving and downloading…"
+                    : "Save as playlist"}
                 </button>
               </form>
               {saveMutation.isError && (

@@ -130,6 +130,7 @@ class ImportCandidateSelection(BaseModel):
 class ImportJobCreate(BaseModel):
     query: str = Field(min_length=3, max_length=300)
     candidate: ImportCandidateSelection | None = None
+    force_llm_approval: bool = False
 
     @field_validator("query")
     @classmethod
@@ -189,6 +190,7 @@ class ImportJobOut(BaseModel):
     candidate_title: str | None
     candidate_artist: str | None
     candidate_duration_seconds: int | None
+    force_llm_approval: bool
     track_id: UUID | None
     error_message: str | None
     created_at: datetime
@@ -261,11 +263,34 @@ class DiscoverRequest(BaseModel):
 
 
 class DiscoverRecommendation(BaseModel):
-    track: TrackOut
+    title: str
+    artist: str
+    local_track: TrackOut | None
     score: float
     seed_count: int
 
 
 class DiscoverResponse(BaseModel):
     seeds: list[UUID]
+    recommendations: list[DiscoverRecommendation]
+
+
+class RadioSeed(BaseModel):
+    title: str = Field(min_length=1, max_length=300)
+    artist: str = Field(min_length=1, max_length=200)
+
+    @field_validator("title", "artist")
+    @classmethod
+    def strip_radio_seed(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Seed metadata cannot be empty")
+        return value
+
+
+class RadioRequest(BaseModel):
+    seeds: list[RadioSeed] = Field(min_length=1, max_length=5)
+
+
+class RadioResponse(BaseModel):
     recommendations: list[DiscoverRecommendation]

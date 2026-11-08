@@ -9,6 +9,7 @@ from .routers import (
     editor_imports,
     health,
     import_jobs,
+    playlists,
     tracks,
 )
 
@@ -31,6 +32,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_settings.router)
     app.include_router(import_jobs.router)
     app.include_router(editor_imports.router)
+    app.include_router(playlists.router)
     app.include_router(tracks.router)
     return app
 

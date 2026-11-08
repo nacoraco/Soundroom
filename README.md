@@ -9,7 +9,8 @@ Soundroom je spletna aplikacija za poslušanje osebne glasbene knjižnice. Upora
 - **F3 – Iskanje po lokalni knjižnici:** implementirano (iskanje po naslovu in izvajalcu brez razlikovanja velikosti črk in šumnikov, najmanj trije znaki, paginacija po 20 zadetkov, prazna stanja in pripravljena gumba za predvajanje ter čakalno vrsto).
 - **F4 – Samodejni uvoz ob manjkajočem zadetku:** implementirano (skrbniške nastavitve, trajna opravila uvoja, ločen delavec z `yt-dlp`/FFmpeg, stanja opravil, uredniški pregled dvoumnih zadetkov, zahteva za uvoz iz praznega iskanja in neobvezno odločanje z modelom Laya).
 - **F5 – Predvajalnik in čakalna vrsta:** implementirano (avtorizirano pretakanje HTTP Range, predvajalnik s čakalno vrsto, Media Session, mobilna vrstica, razširjen pogled in namestljiva PWA).
-- **F6–F7:** v načrtu; naloge in napredek so na [GitHub Projectu Soundroom MVP](https://github.com/users/nacoraco/projects/5).
+- **F6 – Osebni seznami predvajanja:** implementirano (lastniški CRUD, vrstni red skladb, iskanje in dodajanje, vlečenje za prerazporejanje, predvajanje seznama).
+- **F7:** v načrtu; naloge in napredek so na [GitHub Projectu Soundroom MVP](https://github.com/users/nacoraco/projects/5).
 
 ## Dokumentacija
 
@@ -127,7 +128,7 @@ npm test
 npm run build
 ```
 
-## API (F1–F5)
+## API (F1–F6)
 
 | Metoda | Pot | Namen |
 |---|---|---|
@@ -142,6 +143,11 @@ npm run build
 | `GET` | `/api/tracks/{id}/stream` | Avtorizirano pretakanje MP3 s podporo `Range` (200/206/416) |
 | `POST` | `/api/tracks` | Nalaganje MP3 (urednik ali skrbnik, multipart) |
 | `DELETE` | `/api/tracks/{id}` | Trajni izbris skladbe in datoteke z diska (skrbnik) |
+| `GET/POST` | `/api/playlists` | Seznam oziroma ustvarjanje lastnih seznamov predvajanja |
+| `GET/PATCH/DELETE` | `/api/playlists/{id}` | Podrobnosti, preimenovanje in brisanje lastnega seznama |
+| `POST` | `/api/playlists/{id}/items` | Dodajanje skladbe na konec seznama |
+| `DELETE` | `/api/playlists/{id}/items/{item_id}` | Odstranitev skladbe in strnitev položajev |
+| `PUT` | `/api/playlists/{id}/items/reorder` | Shranjevanje novega vrstnega reda |
 | `GET/PUT` | `/api/admin/settings` | Skrbniške nastavitve samodejnega uvoza |
 | `GET` | `/api/import-jobs/config` | Razpoložljivost samodejnega uvoza za prijavljene uporabnike |
 | `GET` | `/api/import-jobs/preview?q=` | Predogled zunanjih izdaj za ročno izbiro (brez LLM) |
@@ -190,6 +196,14 @@ Spreminjajoče zahteve zahtevajo glavo `X-CSRF-Token` z vrednostjo iz odgovora p
 - Skrbnik lahko v knjižnici izbriše skladbo z gumbom **Delete**; API odstrani zapis in pripadajočo zvočno datoteko, pot pa mora ostati znotraj `MEDIA_STORAGE_PATH`.
 - Na telefonu je predvajalnik pritrjen na dno, razširjen pogled pa je celozaslonski. Postavitev je enoročna in brez vodoravnega pomikanja.
 - PWA je namestljiva prek `manifest.webmanifest`, ikon in servisnega delavca. Na Androidu jo v Chromu dodate z **Add to Home screen**; zagon z ikone odpre `/library`.
+
+## Seznami predvajanja (F6)
+
+- Uporabnik vidi in upravlja samo svoje sezname; vsak tuj seznam vrne `404`, ne glede na to, ali obstaja.
+- Seznam vsebuje lastniške metapodatke in urejene postavke. Ista skladba se v posameznem seznamu ne more ponoviti; položaji so unikatni in po odstranitvi strnjeni.
+- API omogoča ustvarjanje, preimenovanje, brisanje, dodajanje in odstranjevanje skladb ter pošiljanje celotnega novega vrstnega reda. Preureditev se shrani v bazi.
+- Vmesnik **Playlists** prikaže kartice seznamov in obrazec za nov seznam. Podrobnosti omogočajo iskanje po knjižnici, dodajanje, odstranjevanje, vlečenje vrstic ter pomožna gumba za premik gor/dol.
+- Gumb **Play all** naloži celoten seznam v skupno čakalno vrsto predvajalnika; posamezno skladbo je mogoče predvajati neposredno iz seznama.
 
 ## Nalaganje glasbe (F2)
 

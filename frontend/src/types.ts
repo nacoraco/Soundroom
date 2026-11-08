@@ -123,3 +123,30 @@ export interface ImportJobUpdateInput {
   candidate_title?: string;
   candidate_artist?: string;
 }
+
+export interface PlaylistSummary {
+  id: string;
+  name: string;
+  item_count: number;
+  total_duration_seconds: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PlaylistItem {
+  id: string;
+  position: number;
+  track: Track;
+}
+
+export interface PlaylistDetail {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  items: PlaylistItem[];
+}
+
+export interface PlaylistCreateInput {
+  name: string;
+}

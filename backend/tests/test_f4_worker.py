@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from app import importer
 from app.config import get_settings
-from app.importer import Candidate, process_next_job
+from app.importer import Candidate, is_live_performance, process_next_job
 from app.llm_review import LlmDecision
 from app.models import AppSettings, RipJob, RipJobStatus, Track, User
 
@@ -299,6 +299,48 @@ def test_worker_uses_llm_for_ambiguous_candidate(
     assert job.status is RipJobStatus.completed
     assert job.candidate_url == "https://example.com/b"
     assert job.candidate_artist == "Artist B"
+
+
+def test_worker_keeps_live_versions_from_llm_when_studio_exists(
+    db_session, media_settings, monkeypatch
+):
+    configure_settings(db_session, llm=True)
+    job = make_job(db_session)
+    reviewed = []
+
+    monkeypatch.setattr(
+        importer,
+        "search_candidates",
+        lambda query: [
+            Candidate("https://example.com/a", "Test Song", "Artist A", 120),
+            Candidate("https://example.com/b", "Test Song", "Artist B", 120),
+            Candidate(
+                "https://example.com/live",
+                "Test Song (Live at Wembley)",
+                "Artist C",
+                120,
+                "Artist C",
+                9_000_000,
+            ),
+        ],
+    )
+
+    def fake_llm(query, candidates, config):
+        reviewed.extend(candidates)
+        return LlmDecision(1, 0.94, "best studio match")
+
+    monkeypatch.setattr(importer, "review_candidates_with_llm", fake_llm)
+    monkeypatch.setattr(importer, "download_candidate", fake_download)
+    monkeypatch.setattr(importer, "convert_to_mp3", fake_convert)
+    monkeypatch.setattr(importer, "probe_duration", lambda path: 120)
+
+    process_next_job(db_session, media_settings)
+    db_session.refresh(job)
+
+    assert reviewed
+    assert all(not is_live_performance(item) for item in reviewed)
+    assert job.status is RipJobStatus.completed
+    assert job.candidate_url == "https://example.com/b"
 
 
 def test_worker_llm_failure_falls_back_to_review(

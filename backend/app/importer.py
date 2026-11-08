@@ -48,6 +48,15 @@ VERSION_MARKERS = (
     "bbc",
     "session",
 )
+LIVE_PERFORMANCE_PATTERN = re.compile(
+    r"(?:[\(\[]\s*[^\)\]]*\b(?:live|concert|performance|performed live|"
+    r"unplugged)\b[^\)\]]*[\)\]])"
+    r"|(?:\blive\s+(?:at|from|in|on|performance|session|version|recording)\b)"
+    r"|(?:\b(?:concert|performed live|unplugged)\b)"
+    r"|(?:[-–—|]\s*(?:live|concert|performance)\b)"
+    r"|(?:\b(?:live|concert|performance)\s*$)",
+    re.IGNORECASE,
+)
 VIDEO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
 
@@ -61,6 +70,10 @@ class Candidate:
     view_count: int | None = None
     video_id: str | None = None
     thumbnail_url: str | None = None
+
+
+def is_live_performance(candidate: Candidate) -> bool:
+    return bool(LIVE_PERFORMANCE_PATTERN.search(candidate.title))
 
 
 def _candidate_video_id(entry: dict) -> str | None:
@@ -213,8 +226,7 @@ def rank_candidates(
     ]
     return sorted(
         ((_match_score(query, candidate), candidate) for candidate in eligible),
-        key=lambda item: item[0],
-        reverse=True,
+        key=lambda item: (is_live_performance(item[1]), -item[0]),
     )
 
 
@@ -468,11 +480,14 @@ def process_job(
 
             if ambiguous and llm_auto_approve:
                 eligible = [item[1] for item in ranked]
+                review_candidates = [
+                    item for item in eligible if not is_live_performance(item)
+                ] or eligible
                 decision = review_candidates_with_llm(
-                    job.query_text, eligible, config
+                    job.query_text, review_candidates, config
                 )
                 if decision is not None:
-                    candidate = eligible[decision.candidate_index]
+                    candidate = review_candidates[decision.candidate_index]
                     ambiguous = False
                     logger.info(
                         "LLM auto-approved import job %s with confidence %.2f: %s",

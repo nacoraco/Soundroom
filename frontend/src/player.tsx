@@ -7,6 +7,7 @@ import {
   useMemo,
   useReducer,
   useRef,
+  useState,
   type ReactNode,
 } from "react";
 
@@ -18,7 +19,22 @@ import {
   type PlayerState,
   type PlayerTrack,
 } from "./playerState";
-import type { ImportPreviewCandidate, Track } from "./types";
+import type {
+  ImportJobStatus,
+  ImportPreviewCandidate,
+  Track,
+} from "./types";
+
+export interface QueuedImport {
+  id: string;
+  videoId: string;
+  jobId: string | null;
+  title: string;
+  artist: string;
+  thumbnailUrl: string | null;
+  status: ImportJobStatus | null;
+  error: string | null;
+}
 
 interface PlayerContextValue {
   state: PlayerState;
@@ -28,6 +44,12 @@ interface PlayerContextValue {
     query: string,
     candidate: ImportPreviewCandidate,
   ) => Promise<void>;
+  queueImport: (
+    query: string,
+    candidate: ImportPreviewCandidate,
+  ) => Promise<boolean>;
+  queuedImports: QueuedImport[];
+  dismissQueuedImport: (id: string) => void;
   enqueue: (track: Track) => boolean;
   toggle: () => void;
   next: () => void;
@@ -47,9 +69,18 @@ const PlayerContext = createContext<PlayerContextValue | null>(null);
 
 export function PlayerProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(playerReducer, initialPlayerState);
+  const [queuedImports, setQueuedImports] = useState<QueuedImport[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const importRequestRef = useRef(0);
+  const aliveRef = useRef(true);
   const queryClient = useQueryClient();
+
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
 
   const currentTrack = state.queue[state.currentIndex] ?? null;
   const currentTrackId = currentTrack?.id ?? null;
@@ -181,6 +212,160 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     },
     [],
   );
+
+  const queueImport = useCallback(
+    async (query: string, candidate: ImportPreviewCandidate) => {
+      if (candidate.duration_seconds === null) {
+        return false;
+      }
+      const isActive = (entry: QueuedImport) =>
+        entry.status === null ||
+        ACTIVE_IMPORT_STATUSES.includes(entry.status);
+      if (
+        queuedImports.some(
+          (entry) =>
+            entry.videoId === candidate.video_id && isActive(entry),
+        )
+      ) {
+        return false;
+      }
+
+      const localId = `queue-${candidate.video_id}-${Date.now()}`;
+      const entry: QueuedImport = {
+        id: localId,
+        videoId: candidate.video_id,
+        jobId: null,
+        title: candidate.title,
+        artist: candidate.artist,
+        thumbnailUrl: candidate.thumbnail_url,
+        status: null,
+        error: null,
+      };
+      setQueuedImports((current) => [
+        ...current.filter((item) => item.videoId !== candidate.video_id),
+        entry,
+      ]);
+
+      const updateEntry = (
+        updater: (current: QueuedImport) => QueuedImport,
+      ) => {
+        setQueuedImports((current) =>
+          current.map((item) => (item.id === localId ? updater(item) : item)),
+        );
+      };
+
+      async function poll(localId: string, jobId: string) {
+        while (aliveRef.current) {
+          let job;
+          try {
+            job = await getImportJob(jobId);
+          } catch (error) {
+            if (!aliveRef.current) {
+              return;
+            }
+            updateEntry((current) => ({
+              ...current,
+              status: "failed",
+              error:
+                error instanceof Error
+                  ? error.message
+                  : "The import status could not be loaded.",
+            }));
+            return;
+          }
+          if (!aliveRef.current) {
+            return;
+          }
+          updateEntry((current) => ({
+            ...current,
+            status: job.status,
+            error:
+              job.status === "failed"
+                ? (job.error_message ?? "The import failed.")
+                : job.status === "cancelled"
+                  ? "The import was cancelled."
+                  : null,
+          }));
+
+          if (job.status === "completed") {
+            if (!job.track_id) {
+              updateEntry((current) => ({
+                ...current,
+                status: "failed",
+                error: "The imported recording could not be located.",
+              }));
+              return;
+            }
+            try {
+              const track = await getTrack(job.track_id);
+              if (!aliveRef.current) {
+                return;
+              }
+              dispatch({ type: "enqueue", track });
+              setQueuedImports((current) =>
+                current.filter((item) => item.id !== localId),
+              );
+              queryClient.invalidateQueries({ queryKey: ["tracks"] });
+            } catch (error) {
+              updateEntry((current) => ({
+                ...current,
+                status: "failed",
+                error:
+                  error instanceof Error
+                    ? error.message
+                    : "The imported recording could not be loaded.",
+              }));
+            }
+            return;
+          }
+
+          if (job.status === "failed" || job.status === "cancelled") {
+            return;
+          }
+
+          await new Promise((resolve) =>
+            window.setTimeout(resolve, 2000),
+          );
+        }
+      }
+
+      try {
+        const job = await createImportJob(query, {
+          video_id: candidate.video_id,
+          title: candidate.title,
+          artist: candidate.artist,
+          duration_seconds: candidate.duration_seconds,
+        });
+        if (!aliveRef.current) {
+          return false;
+        }
+        updateEntry((current) => ({
+          ...current,
+          jobId: job.id,
+          status: job.status,
+        }));
+        void poll(localId, job.id);
+        return true;
+      } catch (error) {
+        if (aliveRef.current) {
+          updateEntry((current) => ({
+            ...current,
+            status: "failed",
+            error:
+              error instanceof Error
+                ? error.message
+                : "The import could not be requested.",
+          }));
+        }
+        return false;
+      }
+    },
+    [queryClient, queuedImports],
+  );
+
+  const dismissQueuedImport = useCallback((id: string) => {
+    setQueuedImports((current) => current.filter((item) => item.id !== id));
+  }, []);
 
   const enqueue = useCallback(
     (track: Track) => {
@@ -438,6 +623,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       currentTrack,
       playTrack,
       startImport,
+      queueImport,
+      queuedImports,
+      dismissQueuedImport,
       enqueue,
       toggle,
       next,
@@ -456,11 +644,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       clearQueue,
       currentTrack,
       dismissError,
+      dismissQueuedImport,
       enqueue,
       next,
       playAt,
       playTrack,
       previous,
+      queueImport,
+      queuedImports,
       removeAt,
       removeTrack,
       seek,

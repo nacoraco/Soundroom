@@ -32,6 +32,8 @@ export function PlayerExpanded() {
     setExpanded,
     setVolume,
     toggleMute,
+    queuedImports,
+    dismissQueuedImport,
   } = usePlayer();
 
   if (!state.expanded || !currentTrack) {
@@ -324,6 +326,38 @@ export function PlayerExpanded() {
                 );
               })}
             </ol>
+          )}
+
+          {queuedImports.length > 0 && (
+            <div className="player-incoming">
+              <span className="eyebrow">Downloading for queue</span>
+              {queuedImports.map((entry) => (
+                <div
+                  className={`player-incoming-item ${
+                    entry.error ? "has-error" : ""
+                  }`}
+                  key={entry.id}
+                >
+                  <span className="player-incoming-copy">
+                    <strong>{entry.title}</strong>
+                    <span>
+                      {entry.error ?? importStatusLabel(entry.status)}
+                    </span>
+                  </span>
+                  {entry.error && (
+                    <button
+                      type="button"
+                      className="player-queue-remove"
+                      onClick={() => dismissQueuedImport(entry.id)}
+                      aria-label={`Dismiss failed queue import ${entry.title}`}
+                      title="Dismiss"
+                    >
+                      <RemoveIcon size={14} />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
           )}
 
           <div className="player-queue-foot">

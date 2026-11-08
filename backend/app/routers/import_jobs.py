@@ -117,6 +117,7 @@ def create_import_job(
             detail="Enter at least 3 characters.",
         )
 
+    candidate_url: str | None = None
     if payload.candidate is not None:
         max_seconds = max(1, settings.max_track_minutes) * 60
         if (
@@ -130,15 +131,25 @@ def create_import_job(
                     "track duration."
                 ),
             )
-
-    existing = db.scalar(
-        select(RipJob)
-        .where(
-            RipJob.normalized_query == normalized_query,
-            RipJob.status.in_(ACTIVE_RIP_JOB_STATUSES),
+        candidate_url = (
+            "https://www.youtube.com/watch?v="
+            f"{payload.candidate.video_id}"
         )
-        .order_by(RipJob.created_at.desc())
-        .limit(1)
+
+    existing_statement = select(RipJob).where(
+        RipJob.normalized_query == normalized_query,
+        RipJob.status.in_(ACTIVE_RIP_JOB_STATUSES),
+    )
+    if candidate_url is not None:
+        existing_statement = existing_statement.where(
+            RipJob.candidate_url == candidate_url
+        )
+    else:
+        existing_statement = existing_statement.where(
+            RipJob.candidate_url.is_(None)
+        )
+    existing = db.scalar(
+        existing_statement.order_by(RipJob.created_at.desc()).limit(1)
     )
     if existing is not None:
         return existing
@@ -149,11 +160,8 @@ def create_import_job(
         normalized_query=normalized_query,
         status=RipJobStatus.queued,
     )
-    if payload.candidate is not None:
-        job.candidate_url = (
-            "https://www.youtube.com/watch?v="
-            f"{payload.candidate.video_id}"
-        )
+    if payload.candidate is not None and candidate_url is not None:
+        job.candidate_url = candidate_url
         job.candidate_title = payload.candidate.title
         job.candidate_artist = payload.candidate.artist
         job.candidate_duration_seconds = payload.candidate.duration_seconds

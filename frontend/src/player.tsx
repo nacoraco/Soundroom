@@ -28,6 +28,7 @@ import {
   RECOMMENDATION_BATCH_SIZE,
   addRecommendationHistoryEntry,
   createRecommendationHistoryEntry,
+  removeRecommendationHistoryTrack,
   replaceRecommendationHistoryTrack,
   selectRecommendationSeeds,
   updateRecommendationProgress,
@@ -99,6 +100,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const recommendationHistoryRef = useRef<RecommendationHistoryEntry[]>([]);
   const recommendationOrderRef = useRef(0);
   const lastActiveTrackIdRef = useRef<string | null>(null);
+  const failedRecommendationKeysRef = useRef<RecommendationSeed[]>([]);
   const stateRef = useRef(state);
   stateRef.current = state;
   const queryClient = useQueryClient();
@@ -117,6 +119,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       recommendationHistoryRef.current = [];
       recommendationOrderRef.current = 0;
       lastActiveTrackIdRef.current = null;
+      failedRecommendationKeysRef.current = [];
       originalSongRef.current = track
         ? { title: track.title, artist: track.artist_name }
         : null;
@@ -159,6 +162,35 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         : current.duration_seconds,
     );
   }, [captureProgress]);
+
+  const removeFailedRecommendation = useCallback((pendingId: string) => {
+    const snapshot = stateRef.current;
+    const index = snapshot.queue.findIndex(
+      (track) => track.id === pendingId,
+    );
+    if (index === -1) {
+      return;
+    }
+    const track = snapshot.queue[index];
+    if (!track.pending) {
+      return;
+    }
+    const title = track.title.trim();
+    const artist = track.artist_name.trim();
+    failedRecommendationKeysRef.current = [
+      ...failedRecommendationKeysRef.current.filter(
+        (item) =>
+          item.title.toLowerCase() !== title.toLowerCase() ||
+          item.artist.toLowerCase() !== artist.toLowerCase(),
+      ),
+      { title, artist },
+    ].slice(-10);
+    recommendationHistoryRef.current = removeRecommendationHistoryTrack(
+      recommendationHistoryRef.current,
+      pendingId,
+    );
+    dispatch({ type: "remove", index });
+  }, []);
 
   const currentTrack = state.queue[state.currentIndex] ?? null;
   const currentTrackId = currentTrack?.id ?? null;
@@ -272,6 +304,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
                       ? error.message
                       : "The import status could not be loaded.",
                 });
+                removeFailedRecommendation(pendingId);
               }
               return;
             }
@@ -298,6 +331,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
                   status: "failed",
                   error: "The imported recording could not be located.",
                 });
+                removeFailedRecommendation(pendingId);
                 return;
               }
               try {
@@ -317,6 +351,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
                       ? error.message
                       : "The imported recording could not be loaded.",
                 });
+                removeFailedRecommendation(pendingId);
               }
               return;
             }
@@ -325,6 +360,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
               current.status === "failed" ||
               current.status === "cancelled"
             ) {
+              removeFailedRecommendation(pendingId);
               return;
             }
 
@@ -346,10 +382,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
                 ? error.message
                 : "The import could not be requested.",
           });
+          removeFailedRecommendation(pendingId);
         }
       }
     },
-    [queryClient],
+    [queryClient, removeFailedRecommendation],
   );
 
   const generateRecommendation = useCallback(
@@ -361,7 +398,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       try {
         const snapshot = stateRef.current;
         const start = Math.max(snapshot.currentIndex, 0);
-        const exclude = [
+        const queueExclude = [
           ...snapshot.queue.slice(start),
           ...snapshot.queue.slice(0, start),
         ]
@@ -371,6 +408,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
             title: track.title,
             artist: track.artist_name,
           }));
+        const exclude = [
+          ...failedRecommendationKeysRef.current,
+          ...queueExclude,
+        ].slice(0, 50);
         const result = await discoverRadio(seeds, {
           limit: RECOMMENDATION_BATCH_SIZE,
           exclude,
@@ -710,9 +751,28 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const next = useCallback(() => {
+    const snapshot = stateRef.current;
+    const current = snapshot.queue[snapshot.currentIndex];
+    if (current?.pending && current.pending_status === "failed") {
+      removeFailedRecommendation(current.id);
+      return;
+    }
     captureCurrentProgress();
+    const failedAheadIndex = snapshot.queue.findIndex(
+      (track, index) =>
+        index > snapshot.currentIndex &&
+        track.pending &&
+        track.pending_status === "failed",
+    );
+    if (failedAheadIndex !== -1) {
+      removeFailedRecommendation(
+        snapshot.queue[failedAheadIndex].id,
+      );
+      dispatch({ type: "next" });
+      return;
+    }
     dispatch({ type: "next" });
-  }, [captureCurrentProgress]);
+  }, [captureCurrentProgress, removeFailedRecommendation]);
 
   const seek = useCallback((time: number) => {
     const audio = audioRef.current;
@@ -741,21 +801,31 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const removeAt = useCallback(
     (index: number) => {
+      const track = stateRef.current.queue[index];
+      if (track?.pending && track.pending_status === "failed") {
+        removeFailedRecommendation(track.id);
+        return;
+      }
       captureCurrentProgress();
       dispatch({ type: "remove", index });
     },
-    [captureCurrentProgress],
+    [captureCurrentProgress, removeFailedRecommendation],
   );
 
   const removeTrack = useCallback(
     (trackId: string) => {
       const index = state.queue.findIndex((track) => track.id === trackId);
       if (index !== -1) {
+        const track = state.queue[index];
+        if (track.pending && track.pending_status === "failed") {
+          removeFailedRecommendation(trackId);
+          return;
+        }
         captureCurrentProgress();
         dispatch({ type: "remove", index });
       }
     },
-    [captureCurrentProgress, state.queue],
+    [captureCurrentProgress, removeFailedRecommendation, state.queue],
   );
 
   const clearQueue = useCallback(() => {

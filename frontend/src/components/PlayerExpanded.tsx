@@ -84,6 +84,9 @@ export function PlayerExpanded() {
     index: number,
     isCurrent: boolean,
   ) {
+    const isFailedPending = Boolean(
+      track.pending && track.pending_status === "failed",
+    );
     return (
       <li
         className={`player-queue-item ${isCurrent ? "is-current" : ""}`}
@@ -93,6 +96,11 @@ export function PlayerExpanded() {
           type="button"
           className="player-queue-track"
           onClick={() => {
+            if (isFailedPending) {
+              removeAt(index);
+              setQueueOpen(false);
+              return;
+            }
             playAt(index);
             setQueueOpen(false);
           }}
@@ -122,13 +130,21 @@ export function PlayerExpanded() {
             {formatTime(track.duration_seconds)}
           </span>
         </button>
-        {!track.pending && (
+        {(!track.pending || isFailedPending) && (
           <button
             type="button"
             className="player-queue-remove"
             onClick={() => removeAt(index)}
-            aria-label={`Remove ${track.title} from queue`}
-            title="Remove from queue"
+            aria-label={
+              isFailedPending
+                ? `Skip ${track.title}`
+                : `Remove ${track.title} from queue`
+            }
+            title={
+              isFailedPending
+                ? "Skip failed recommendation"
+                : "Remove from queue"
+            }
           >
             <RemoveIcon size={14} />
           </button>

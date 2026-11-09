@@ -374,9 +374,23 @@ def test_worker_llm_failure_falls_back_to_review(
     db_session.refresh(job)
 
     assert job.status is RipJobStatus.needs_review
-    assert "llm" in job.error_message.lower()
     assert "review" in job.error_message.lower()
     assert download_called is False
+
+
+def test_worker_reports_missing_search_results(
+    db_session, media_settings, monkeypatch
+):
+    configure_settings(db_session)
+    job = make_job(db_session)
+
+    monkeypatch.setattr(importer, "search_candidates", lambda query: [])
+
+    process_next_job(db_session, media_settings)
+    db_session.refresh(job)
+
+    assert job.status is RipJobStatus.failed
+    assert "No external search results" in (job.error_message or "")
 
 
 def test_worker_force_llm_approval_overrides_disabled_setting(

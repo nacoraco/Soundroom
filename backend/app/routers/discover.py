@@ -243,16 +243,27 @@ def discover_radio(
         _load_local_tracks(db),
         limit=RESULT_LIMIT + len(payload.exclude),
     )
-    excluded_keys = {
-        (normalize_text(item.title), normalize_text(item.artist))
-        for item in payload.exclude
-    }
+    excluded_keys: set[tuple[str, str]] = set()
+    for item in payload.exclude:
+        artist, title = clean_seed_metadata(item.artist, item.title)
+        excluded_keys.add((normalize_text(title), normalize_text(artist)))
+        excluded_keys.add((normalize_text(item.title), normalize_text(item.artist)))
     recommendations = [
         recommendation
         for recommendation in recommendations
         if (
-            normalize_text(recommendation.title),
-            normalize_text(recommendation.artist),
+            normalize_text(
+                clean_seed_metadata(
+                    recommendation.artist,
+                    recommendation.title,
+                )[1]
+            ),
+            normalize_text(
+                clean_seed_metadata(
+                    recommendation.artist,
+                    recommendation.title,
+                )[0]
+            ),
         )
         not in excluded_keys
     ][: payload.limit]

@@ -5,6 +5,8 @@ export const RECOMMENDATION_COMPLETION_THRESHOLD = 0.5;
 export const RECOMMENDATION_BATCH_SIZE = 1;
 export const RECOMMENDATION_BUFFER_SIZE = 2;
 export const MAX_RECOMMENDATION_SEEDS = MAX_RECOMMENDATION_HISTORY;
+export const MAX_RECOMMENDATION_REJECTIONS = 100;
+const TRAILING_BRACKETS = /\s*[([][^)\]]*[)\]]\s*$/;
 
 export interface RecommendationSeed {
   title: string;
@@ -117,6 +119,98 @@ export function recommendationCompletion(
     return 0;
   }
   return entry.progressSeconds / entry.durationSeconds;
+}
+
+function stripTrailingBrackets(value: string): string {
+  let result = value.trim();
+  let previous = "";
+  while (previous !== result) {
+    previous = result;
+    result = result.replace(TRAILING_BRACKETS, "").trim();
+  }
+  return result;
+}
+
+function compactMetadata(value: string): string {
+  return normalizeRecommendationText(value).replace(/ /g, "");
+}
+
+export function normalizeRecommendationText(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+export function cleanRecommendationMetadata(
+  artist: string,
+  title: string,
+): { title: string; artist: string } {
+  const cleanedArtist = artist.trim();
+  const cleanedTitle = stripTrailingBrackets(title);
+
+  if (cleanedTitle.includes(" - ")) {
+    const [prefix, suffix] = cleanedTitle.split(" - ", 2);
+    const cleanedPrefix = prefix.trim();
+    const cleanedSuffix = stripTrailingBrackets(suffix);
+    const prefixCompact = compactMetadata(cleanedPrefix);
+    const artistCompact = compactMetadata(cleanedArtist);
+    if (
+      cleanedPrefix &&
+      cleanedSuffix &&
+      prefixCompact &&
+      artistCompact &&
+      (prefixCompact.includes(artistCompact) ||
+        artistCompact.includes(prefixCompact))
+    ) {
+      return { title: cleanedSuffix, artist: cleanedPrefix };
+    }
+  }
+
+  return {
+    title: cleanedTitle || title.trim(),
+    artist: cleanedArtist,
+  };
+}
+
+export function recommendationKey(title: string, artist: string): string {
+  const metadata = cleanRecommendationMetadata(artist, title);
+  return `${normalizeRecommendationText(metadata.title)}|${normalizeRecommendationText(
+    metadata.artist,
+  )}`;
+}
+
+export function addRecommendationRejection(
+  rejections: RecommendationSeed[],
+  rejection: RecommendationSeed,
+): RecommendationSeed[] {
+  const metadata = cleanRecommendationMetadata(
+    rejection.artist,
+    rejection.title,
+  );
+  if (!metadata.title || !metadata.artist) {
+    return rejections;
+  }
+  const key = recommendationKey(metadata.title, metadata.artist);
+  return [
+    metadata,
+    ...rejections.filter(
+      (item) => recommendationKey(item.title, item.artist) !== key,
+    ),
+  ].slice(0, MAX_RECOMMENDATION_REJECTIONS);
+}
+
+export function shouldRejectSkippedTrack(
+  track: PlayerTrack,
+  history: RecommendationHistoryEntry[],
+): boolean {
+  const entry = history.find((item) => item.track.id === track.id);
+  return (
+    !entry ||
+    recommendationCompletion(entry) <= RECOMMENDATION_COMPLETION_THRESHOLD
+  );
 }
 
 export function selectRecommendationSeeds(

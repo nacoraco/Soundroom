@@ -3,13 +3,19 @@ import { describe, expect, it } from "vitest";
 import type { PlayerTrack } from "./playerState";
 import {
   MAX_RECOMMENDATION_HISTORY,
+  MAX_RECOMMENDATION_REJECTIONS,
   addRecommendationHistoryEntry,
+  addRecommendationRejection,
+  cleanRecommendationMetadata,
   createRecommendationHistoryEntry,
+  recommendationKey,
   removeRecommendationHistoryTrack,
   replaceRecommendationHistoryTrack,
   selectRecommendationSeeds,
+  shouldRejectSkippedTrack,
   updateRecommendationProgress,
   type RecommendationHistoryEntry,
+  type RecommendationSeed,
 } from "./recommendationSession";
 
 function track(
@@ -205,5 +211,86 @@ describe("recommendation seed selection", () => {
     expect(selectRecommendationSeeds(history, original)).toEqual([
       { title: "Current Song", artist: "Test Artist" },
     ]);
+  });
+});
+
+describe("recommendation rejections", () => {
+  it("cleans artist prefixes and video suffixes before building a key", () => {
+    expect(
+      cleanRecommendationMetadata(
+        "Artist",
+        "Artist - Rejected Song (Official Video)",
+      ),
+    ).toEqual({ title: "Rejected Song", artist: "Artist" });
+    expect(
+      recommendationKey(
+        "Rejected Song",
+        "Artist",
+      ),
+    ).toBe(
+      recommendationKey(
+        "Artist - Rejected Song (Official Video)",
+        "Artist",
+      ),
+    );
+  });
+
+  it("matches metadata case and diacritics insensitively", () => {
+    expect(recommendationKey("Café", "Beyoncé")).toBe(
+      recommendationKey("cafe", "beyonce"),
+    );
+  });
+
+  it("stores the newest rejection first and removes duplicates", () => {
+    const first = addRecommendationRejection([], {
+      title: "Song One",
+      artist: "Artist",
+    });
+    const second = addRecommendationRejection(first, {
+      title: "Song Two",
+      artist: "Artist",
+    });
+    const repeated = addRecommendationRejection(second, {
+      title: "Song One (Official Video)",
+      artist: "Artist",
+    });
+
+    expect(repeated).toEqual([
+      { title: "Song One", artist: "Artist" },
+      { title: "Song Two", artist: "Artist" },
+    ]);
+  });
+
+  it("rejects tracks listened to for fifty percent or less", () => {
+    const current = track("current", "Current Song");
+    let history = [entry(current, 80)];
+    expect(shouldRejectSkippedTrack(current, history)).toBe(true);
+
+    history = updateRecommendationProgress(history, "current", 100, 200);
+    expect(shouldRejectSkippedTrack(current, history)).toBe(true);
+
+    history = updateRecommendationProgress(history, "current", 101, 200);
+    expect(shouldRejectSkippedTrack(current, history)).toBe(false);
+  });
+
+  it("rejects a track that was never tracked in the listening history", () => {
+    expect(shouldRejectSkippedTrack(track("unknown", "Unknown"), [])).toBe(
+      true,
+    );
+  });
+
+  it("caps the rejection list", () => {
+    let rejections: RecommendationSeed[] = [];
+    for (let index = 0; index < MAX_RECOMMENDATION_REJECTIONS + 5; index += 1) {
+      rejections = addRecommendationRejection(rejections, {
+        title: `Rejected ${index}`,
+        artist: "Artist",
+      });
+    }
+
+    expect(rejections).toHaveLength(MAX_RECOMMENDATION_REJECTIONS);
+    expect(rejections[0].title).toBe(
+      `Rejected ${MAX_RECOMMENDATION_REJECTIONS + 4}`,
+    );
   });
 });

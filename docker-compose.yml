@@ -54,7 +54,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-soundroom}:${POSTGRES_PASSWORD:-soundroom}@db:5432/${POSTGRES_DB:-soundroom}
       MEDIA_STORAGE_PATH: /data/audio
-      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-laya}
       OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-30}
       LLM_CONFIDENCE_THRESHOLD: ${LLM_CONFIDENCE_THRESHOLD:-0.0}
@@ -62,42 +62,17 @@ services:
     volumes:
       - ./backend:/app
       - ./data/audio:/data/audio
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       backend:
         condition: service_started
-      ollama:
-        condition: service_healthy
-
-  ollama:
-    image: ollama/ollama:latest
-    environment:
-      OLLAMA_HOST: 0.0.0.0:11434
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama:/root/.ollama
-    healthcheck:
-      test: ["CMD", "ollama", "list"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-
-  ollama-pull:
-    image: ollama/ollama:latest
-    profiles: ["llm-setup"]
-    depends_on:
-      ollama:
-        condition: service_healthy
-    environment:
-      OLLAMA_HOST: http://ollama:11434
-    entrypoint: ["ollama", "pull", "laya"]
-    volumes:
-      - ollama:/root/.ollama
 
   frontend:
     build: ./frontend
     environment:
       VITE_PROXY_TARGET: http://backend:8000
+      VITE_ALLOWED_HOSTS: ${VITE_ALLOWED_HOSTS:-}
     volumes:
       - ./frontend:/app
       - /app/node_modules
@@ -108,4 +83,3 @@ services:
 
 volumes:
   pgdata:
-  ollama:

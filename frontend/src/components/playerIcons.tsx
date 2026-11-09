@@ -178,3 +178,79 @@ export function RemoveIcon({ size = 14 }: IconProps) {
     </svg>
   );
 }
+
+export function SearchIcon({ size = 20 }: IconProps) {
+  return (
+    <svg aria-hidden="true" fill="none" height={size} stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" viewBox="0 0 24 24" width={size}>
+      <circle cx="11" cy="11" r="6.5" />
+      <path d="m16 16 4 4" />
+    </svg>
+  );
+}
+
+export function PlusIcon({ size = 20 }: IconProps) {
+  return (
+    <svg aria-hidden="true" fill="none" height={size} stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" viewBox="0 0 24 24" width={size}>
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+export function TrashIcon({ size = 20 }: IconProps) {
+  return (
+    <svg aria-hidden="true" fill="none" height={size} stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.7" viewBox="0 0 24 24" width={size}>
+      <path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5" />
+    </svg>
+  );
+}
+
+export function HomeIcon({ size = 20 }: IconProps) {
+  return (
+    <svg aria-hidden="true" fill="none" height={size} stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.7" viewBox="0 0 24 24" width={size}>
+      <path d="m3 11 9-8 9 8M5 10v10h14V10M9 20v-6h6v6" />
+    </svg>
+  );
+}
+
+export function LibraryIcon({ size = 20 }: IconProps) {
+  return (
+    <svg aria-hidden="true" fill="none" height={size} stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.7" viewBox="0 0 24 24" width={size}>
+      <path d="M5 4v16M10 4v16M15 5l4-1 3 15-4 1z" />
+    </svg>
+  );
+}
+
+export function DiscoverIcon({ size = 20 }: IconProps) {
+  return (
+    <svg aria-hidden="true" fill="none" height={size} stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.7" viewBox="0 0 24 24" width={size}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="m15.5 8.5-2 5-5 2 2-5z" />
+    </svg>
+  );
+}
+
+export function MoreIcon({ size = 20 }: IconProps) {
+  return (
+    <svg aria-hidden="true" fill="currentColor" height={size} viewBox="0 0 24 24" width={size}>
+      <circle cx="5" cy="12" r="1.6" />
+      <circle cx="12" cy="12" r="1.6" />
+      <circle cx="19" cy="12" r="1.6" />
+    </svg>
+  );
+}
+
+export function ArrowUpIcon({ size = 18 }: IconProps) {
+  return (
+    <svg aria-hidden="true" fill="none" height={size} stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 24 24" width={size}>
+      <path d="m6 10 6-6 6 6M12 4v16" />
+    </svg>
+  );
+}
+
+export function ArrowDownIcon({ size = 18 }: IconProps) {
+  return (
+    <svg aria-hidden="true" fill="none" height={size} stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 24 24" width={size}>
+      <path d="m6 14 6 6 6-6M12 20V4" />
+    </svg>
+  );
+}

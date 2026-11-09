@@ -33,6 +33,10 @@ services:
       INITIAL_LISTENER_DISPLAY_NAME: ${INITIAL_LISTENER_DISPLAY_NAME:-Listener}
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-50}
       MEDIA_STORAGE_PATH: /data/audio
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-laya}
+      OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-30}
+      LLM_CONFIDENCE_THRESHOLD: ${LLM_CONFIDENCE_THRESHOLD:-0.0}
       LASTFM_API_KEY: ${LASTFM_API_KEY:-}
       LASTFM_BASE_URL: ${LASTFM_BASE_URL:-https://ws.audioscrobbler.com/2.0/}
       LASTFM_TIMEOUT_SECONDS: ${LASTFM_TIMEOUT_SECONDS:-10}
@@ -43,6 +47,8 @@ services:
     volumes:
       - ./backend:/app
       - ./data/audio:/data/audio
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8000:8000"
     depends_on:

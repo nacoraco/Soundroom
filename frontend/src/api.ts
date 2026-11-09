@@ -9,6 +9,7 @@ import type {
   ImportJobStatus,
   ImportJobUpdateInput,
   ImportPreview,
+  LlmStatus,
   PlaylistCreateInput,
   PlaylistDetail,
   PlaylistSummary,
@@ -281,6 +282,10 @@ export async function updateAppSettings(
     method: "PUT",
     body: JSON.stringify(input),
   });
+}
+
+export async function getLlmStatus(): Promise<LlmStatus> {
+  return request<LlmStatus>("/api/admin/settings/llm-status");
 }
 
 export async function getImportConfig(): Promise<ImportConfig> {

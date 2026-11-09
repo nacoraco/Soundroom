@@ -374,8 +374,10 @@ def test_worker_llm_failure_falls_back_to_review(
     db_session.refresh(job)
 
     assert job.status is RipJobStatus.needs_review
-    assert job.error_message
+    assert "llm" in job.error_message.lower()
+    assert "review" in job.error_message.lower()
     assert download_called is False
+
 
 def test_worker_force_llm_approval_overrides_disabled_setting(
     db_session, media_settings, monkeypatch

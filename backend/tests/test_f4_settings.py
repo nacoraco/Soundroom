@@ -83,6 +83,29 @@ def test_settings_defaults_and_admin_update(client: TestClient):
     assert reread.json()["max_track_minutes"] == 30
 
 
+def test_llm_status_is_reported_to_admins(client: TestClient, monkeypatch):
+    from app.llm_review import LlmAvailability
+    from app.routers import admin_settings
+
+    headers = admin_headers(client)
+    monkeypatch.setattr(
+        admin_settings,
+        "check_llm_availability",
+        lambda config: LlmAvailability(
+            available=True,
+            model=config.ollama_model,
+            base_url=config.ollama_base_url,
+        ),
+    )
+
+    response = client.get("/api/admin/settings/llm-status", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["available"] is True
+    assert response.json()["model"] == "laya"
+    assert response.json()["detail"] is None
+
+
 def test_llm_auto_approve_can_be_enabled(client: TestClient):
     headers = admin_headers(client)
 
@@ -123,6 +146,9 @@ def test_non_admin_cannot_manage_settings(client: TestClient):
     editor_client = TestClient(client.app)
     editor_headers = login_headers(editor_client, "editor@example.com")
     assert editor_client.get("/api/admin/settings").status_code == 403
+    assert (
+        editor_client.get("/api/admin/settings/llm-status").status_code == 403
+    )
     assert set_settings(
         editor_client, editor_headers, enabled=True
     ).status_code == 403
@@ -130,6 +156,10 @@ def test_non_admin_cannot_manage_settings(client: TestClient):
     listener_client = TestClient(client.app)
     listener_headers = login_headers(listener_client, "listener@example.com")
     assert listener_client.get("/api/admin/settings").status_code == 403
+    assert (
+        listener_client.get("/api/admin/settings/llm-status").status_code
+        == 403
+    )
     assert set_settings(
         listener_client, listener_headers, enabled=True
     ).status_code == 403

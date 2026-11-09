@@ -478,7 +478,9 @@ def process_job(
                 )
                 return
 
+            llm_attempted = False
             if ambiguous and llm_auto_approve:
+                llm_attempted = True
                 eligible = [item[1] for item in ranked]
                 review_candidates = [
                     item for item in eligible if not is_live_performance(item)
@@ -495,6 +497,12 @@ def process_job(
                         decision.confidence,
                         decision.reason,
                     )
+                else:
+                    logger.warning(
+                        "LLM review for import job %s returned no decision; "
+                        "editor review required",
+                        job_id,
+                    )
 
             job.candidate_url = candidate.url
             job.candidate_title = candidate.title
@@ -502,7 +510,12 @@ def process_job(
             job.candidate_duration_seconds = candidate.duration_seconds
             if ambiguous:
                 job.status = RipJobStatus.needs_review
-                job.error_message = "Ambiguous match; editor review required."
+                job.error_message = (
+                    "Ambiguous match; LLM review unavailable or inconclusive. "
+                    "Editor review required."
+                    if llm_attempted
+                    else "Ambiguous match; editor review required."
+                )
                 db.add(job)
                 db.commit()
                 return

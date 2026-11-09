@@ -109,6 +109,13 @@ class AppSettingsUpdate(BaseModel):
     max_track_minutes: int = Field(ge=1, le=1440)
 
 
+class LlmStatusOut(BaseModel):
+    available: bool
+    model: str
+    base_url: str
+    detail: str | None = None
+
+
 class ImportCandidateSelection(BaseModel):
     video_id: str = Field(
         min_length=11,

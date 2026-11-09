@@ -1892,6 +1892,34 @@ tbody tr:hover {
   gap: 1.2rem;
 }
 
+.llm-status {
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 0.85rem 0.9rem;
+}
+
+.llm-status p {
+  font-size: 0.8rem;
+  margin: 0.35rem 0 0.6rem;
+}
+
+.llm-status .eyebrow {
+  color: inherit;
+  opacity: 0.8;
+}
+
+.llm-status.is-ok {
+  background: rgba(91, 117, 94, 0.12);
+  border-color: rgba(91, 117, 94, 0.3);
+  color: var(--moss);
+}
+
+.llm-status.is-error {
+  background: #f6e2da;
+  border-color: rgba(165, 74, 53, 0.26);
+  color: var(--clay);
+}
+
 .toggle-row {
   align-items: center;
   border-bottom: 1px solid var(--line-soft);

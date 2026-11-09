@@ -119,6 +119,13 @@ export interface AppSettingsUpdateInput {
   max_track_minutes: number;
 }
 
+export interface LlmStatus {
+  available: boolean;
+  model: string;
+  base_url: string;
+  detail: string | null;
+}
+
 export interface ImportJobUpdateInput {
   candidate_title?: string;
   candidate_artist?: string;

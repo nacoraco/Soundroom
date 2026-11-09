@@ -37,7 +37,7 @@ export function LibraryPage() {
   const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
-    setInput(query);
+    setInput((current) => (current.trim() === query ? current : query));
   }, [query]);
 
   useEffect(() => {

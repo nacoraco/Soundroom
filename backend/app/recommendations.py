@@ -11,6 +11,7 @@ from .text import normalize_text
 TRAILING_BRACKETS = re.compile(r"\s*[\(\[][^)\]]*[\)\]]\s*$")
 SIMILAR_LIMIT = 20
 RESULT_LIMIT = 20
+MAX_RECOMMENDATION_HISTORY = 10
 
 
 class LastfmError(Exception):

@@ -1892,6 +1892,34 @@ tbody tr:hover {
   gap: 1.2rem;
 }
 
+.llm-status {
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 0.85rem 0.9rem;
+}
+
+.llm-status p {
+  font-size: 0.8rem;
+  margin: 0.35rem 0 0.6rem;
+}
+
+.llm-status .eyebrow {
+  color: inherit;
+  opacity: 0.8;
+}
+
+.llm-status.is-ok {
+  background: rgba(91, 117, 94, 0.12);
+  border-color: rgba(91, 117, 94, 0.3);
+  color: var(--moss);
+}
+
+.llm-status.is-error {
+  background: #f6e2da;
+  border-color: rgba(165, 74, 53, 0.26);
+  color: var(--clay);
+}
+
 .toggle-row {
   align-items: center;
   border-bottom: 1px solid var(--line-soft);
@@ -2659,7 +2687,7 @@ tbody tr:hover {
 /* Expanded player */
 
 .player-expanded {
-  animation: player-expand 360ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  animation: player-expand 360ms cubic-bezier(0.2, 0.7, 0.2, 1);
   background: var(--forest-deep);
   color: var(--cream);
   inset: 0;
@@ -2952,6 +2980,12 @@ tbody tr:hover {
   margin-top: 0.3rem;
 }
 
+.player-queue-head-actions {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+}
+
 .player-queue-clear {
   background: transparent;
   border: 0;
@@ -2971,6 +3005,7 @@ tbody tr:hover {
 .player-queue-body {
   flex: 1 1 auto;
   min-height: 0;
+  overscroll-behavior: contain;
   overflow-y: auto;
   scrollbar-color: rgba(223, 187, 123, 0.4) transparent;
   scrollbar-width: thin;
@@ -3153,6 +3188,123 @@ tbody tr:hover {
   text-transform: uppercase;
 }
 
+/* Mobile queue sheet */
+
+.player-queue-fab,
+.player-queue-close,
+.player-queue-backdrop {
+  display: none;
+}
+
+@media (max-width: 960px) {
+  .player-queue {
+    display: none;
+  }
+
+  .player-queue.is-open {
+    animation: queue-sheet-in 260ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+    background: var(--forest-deep);
+    border: 1px solid rgba(223, 187, 123, 0.28);
+    border-bottom: 0;
+    border-radius: 1rem 1rem 0 0;
+    bottom: 0;
+    box-shadow: 0 -26px 70px rgba(0, 0, 0, 0.55);
+    display: flex;
+    left: 0;
+    max-height: min(82dvh, 46rem);
+    padding: 0.85rem 1rem max(1rem, env(safe-area-inset-bottom));
+    position: fixed;
+    right: 0;
+    z-index: 96;
+  }
+
+  .player-queue.is-open::before {
+    align-self: center;
+    background: rgba(247, 241, 229, 0.22);
+    border-radius: 999px;
+    content: "";
+    flex: 0 0 auto;
+    height: 3px;
+    margin-bottom: 0.55rem;
+    width: 2.6rem;
+  }
+
+  .player-queue-backdrop {
+    background: rgba(9, 13, 11, 0.62);
+    display: block;
+    inset: 0;
+    position: fixed;
+    z-index: 95;
+  }
+
+  .player-queue-fab {
+    align-items: center;
+    background: var(--brass);
+    border: 1px solid rgba(247, 241, 229, 0.4);
+    border-radius: 50%;
+    bottom: max(1.1rem, env(safe-area-inset-bottom));
+    box-shadow: 0 16px 36px rgba(9, 13, 11, 0.55);
+    color: var(--forest-deep);
+    display: inline-flex;
+    height: 3.4rem;
+    justify-content: center;
+    position: fixed;
+    right: 1rem;
+    width: 3.4rem;
+    z-index: 94;
+  }
+
+  .player-queue-fab:hover {
+    background: var(--brass-light);
+  }
+
+  .player-queue-fab-count {
+    align-items: center;
+    background: var(--forest-deep);
+    border: 1px solid rgba(223, 187, 123, 0.55);
+    border-radius: 999px;
+    color: var(--cream);
+    display: flex;
+    font-family: var(--font-mono);
+    font-size: 0.52rem;
+    height: 1.3rem;
+    justify-content: center;
+    min-width: 1.3rem;
+    padding: 0 0.3rem;
+    position: absolute;
+    right: -0.3rem;
+    top: -0.3rem;
+  }
+
+  .player-queue-close {
+    align-items: center;
+    background: transparent;
+    border: 1px solid rgba(247, 241, 229, 0.22);
+    border-radius: 50%;
+    color: #b9c8bc;
+    display: inline-flex;
+    height: 1.9rem;
+    justify-content: center;
+    padding: 0;
+    width: 1.9rem;
+  }
+
+  .player-queue-count {
+    display: none;
+  }
+}
+
+@keyframes queue-sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(2rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @keyframes player-expand {
   from {
     opacity: 0;
@@ -3196,10 +3348,6 @@ tbody tr:hover {
     grid-template-columns: 1fr;
     min-height: 0;
   }
-
-  .player-queue {
-    max-height: none;
-  }
 }
 
 @media (max-width: 760px) {
@@ -3221,10 +3369,6 @@ tbody tr:hover {
 
   .player-track-copy h2 {
     font-size: clamp(2.4rem, 10vw, 3.6rem);
-  }
-
-  .player-queue {
-    max-height: none;
   }
 }
 
@@ -3469,6 +3613,7 @@ tbody tr:hover {
   }
 
   .player-expanded-grid {
+    grid-template-rows: minmax(0, 1fr);
     height: 100%;
     max-height: 100%;
     min-height: 0;

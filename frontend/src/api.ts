@@ -9,6 +9,7 @@ import type {
   ImportJobStatus,
   ImportJobUpdateInput,
   ImportPreview,
+  LlmStatus,
   PlaylistCreateInput,
   PlaylistDetail,
   PlaylistSummary,
@@ -191,10 +192,18 @@ export async function discoverSimilar(
 
 export async function discoverRadio(
   seeds: Array<{ title: string; artist: string }>,
+  options?: {
+    limit?: number;
+    exclude?: Array<{ title: string; artist: string }>;
+  },
 ): Promise<DiscoverResponse> {
   return request<DiscoverResponse>("/api/discover/radio", {
     method: "POST",
-    body: JSON.stringify({ seeds }),
+    body: JSON.stringify({
+      seeds,
+      limit: options?.limit ?? 1,
+      exclude: options?.exclude ?? [],
+    }),
   });
 }
 
@@ -273,6 +282,10 @@ export async function updateAppSettings(
     method: "PUT",
     body: JSON.stringify(input),
   });
+}
+
+export async function getLlmStatus(): Promise<LlmStatus> {
+  return request<LlmStatus>("/api/admin/settings/llm-status");
 }
 
 export async function getImportConfig(): Promise<ImportConfig> {

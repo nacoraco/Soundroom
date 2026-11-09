@@ -1,3 +1,5 @@
+import { useEffect, useState } from "react";
+
 import { usePlayer } from "../player";
 import type { PlayerTrack } from "../playerState";
 import {
@@ -36,6 +38,21 @@ export function PlayerExpanded() {
     queuedImports,
     dismissQueuedImport,
   } = usePlayer();
+  const [queueOpen, setQueueOpen] = useState(false);
+
+  useEffect(() => {
+    if (!queueOpen) {
+      return;
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.stopImmediatePropagation();
+        setQueueOpen(false);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [queueOpen]);
 
   if (!state.expanded || !currentTrack) {
     return null;
@@ -75,7 +92,10 @@ export function PlayerExpanded() {
         <button
           type="button"
           className="player-queue-track"
-          onClick={() => playAt(index)}
+          onClick={() => {
+            playAt(index);
+            setQueueOpen(false);
+          }}
           aria-current={isCurrent ? "true" : undefined}
         >
           <span className="player-queue-index mono">
@@ -331,20 +351,42 @@ export function PlayerExpanded() {
           )}
         </section>
 
-        <aside className="player-queue" aria-label="Playback queue">
+        {queueOpen && (
+          <div
+            className="player-queue-backdrop"
+            onClick={() => setQueueOpen(false)}
+            aria-hidden="true"
+          />
+        )}
+
+        <aside
+          id="player-queue-panel"
+          className={`player-queue ${queueOpen ? "is-open" : ""}`}
+          aria-label="Playback queue"
+        >
           <header className="player-queue-head">
             <div>
               <span className="eyebrow">The stack</span>
               <h3>{isPending ? "Incoming" : "Up next"}</h3>
             </div>
-            <button
-              type="button"
-              className="player-queue-clear"
-              onClick={clearQueue}
-              aria-label="Clear queue"
-            >
-              Clear
-            </button>
+            <div className="player-queue-head-actions">
+              <button
+                type="button"
+                className="player-queue-clear"
+                onClick={clearQueue}
+                aria-label="Clear queue"
+              >
+                Clear
+              </button>
+              <button
+                type="button"
+                className="player-queue-close"
+                onClick={() => setQueueOpen(false)}
+                aria-label="Close queue"
+              >
+                <CloseIcon size={15} />
+              </button>
+            </div>
           </header>
 
           {state.queue.length === 0 ? (
@@ -438,6 +480,19 @@ export function PlayerExpanded() {
             </span>
           </div>
         </aside>
+
+        <button
+          type="button"
+          className="player-queue-fab"
+          onClick={() => setQueueOpen(true)}
+          aria-label={`Open queue, ${state.queue.length} tracks`}
+          aria-controls="player-queue-panel"
+          aria-expanded={queueOpen}
+          title="Queue"
+        >
+          <QueueIcon size={20} />
+          <span className="player-queue-fab-count">{state.queue.length}</span>
+        </button>
       </div>
     </div>
   );

@@ -304,7 +304,7 @@ def test_discover_endpoint_returns_local_and_external_recommendations(
     assert db_session.scalar(select(func.count(RipJob.id))) == 0
 
 
-def test_radio_endpoint_uses_metadata_seeds_and_returns_five(client: TestClient, db_session):
+def test_radio_endpoint_uses_metadata_seeds_and_respects_limit(client: TestClient, db_session):
     headers = admin_headers(client)
     local = seed_track(db_session, "Local Result", "Local Artist")
     fake = FakeLastfm(
@@ -323,7 +323,8 @@ def test_radio_endpoint_uses_metadata_seeds_and_returns_five(client: TestClient,
             json={
                 "seeds": [
                     {"title": "Seed Artist - Seed Song (Official Video)", "artist": "Seed Artist"}
-                ]
+                ],
+                "limit": 5,
             },
             headers=headers,
         )
@@ -342,7 +343,70 @@ def test_radio_endpoint_uses_metadata_seeds_and_returns_five(client: TestClient,
     assert fake.calls == [("Seed Artist", "Seed Song", 20)]
 
 
-def test_radio_rejects_more_than_five_seeds(client: TestClient):
+def test_radio_endpoint_returns_one_recommendation_by_default(client: TestClient):
+    headers = admin_headers(client)
+    fake = FakeLastfm(
+        {
+            ("Seed Artist", "Seed Song"): [
+                SimilarTrack("External One", "External Artist", 0.8),
+                SimilarTrack("External Two", "External Artist", 0.7),
+            ]
+        }
+    )
+    override_lastfm(client, fake)
+    try:
+        response = client.post(
+            "/api/discover/radio",
+            json={
+                "seeds": [
+                    {"title": "Seed Song", "artist": "Seed Artist"}
+                ]
+            },
+            headers=headers,
+        )
+    finally:
+        clear_override(client)
+
+    assert response.status_code == 200
+    assert [item["title"] for item in response.json()["recommendations"]] == [
+        "External One"
+    ]
+
+
+def test_radio_endpoint_excludes_tracks_already_in_the_queue(client: TestClient):
+    headers = admin_headers(client)
+    fake = FakeLastfm(
+        {
+            ("Seed Artist", "Seed Song"): [
+                SimilarTrack("Queued Song", "Queued Artist", 0.9),
+                SimilarTrack("Fresh Song", "Fresh Artist", 0.8),
+            ]
+        }
+    )
+    override_lastfm(client, fake)
+    try:
+        response = client.post(
+            "/api/discover/radio",
+            json={
+                "seeds": [
+                    {"title": "Seed Song", "artist": "Seed Artist"}
+                ],
+                "exclude": [
+                    {"title": "Queued Song", "artist": "Queued Artist"}
+                ],
+            },
+            headers=headers,
+        )
+    finally:
+        clear_override(client)
+
+    assert response.status_code == 200
+    assert [item["title"] for item in response.json()["recommendations"]] == [
+        "Fresh Song"
+    ]
+
+
+def test_radio_rejects_more_than_ten_seeds(client: TestClient):
     headers = admin_headers(client)
     override_lastfm(client, FakeLastfm({}))
     try:
@@ -351,7 +415,7 @@ def test_radio_rejects_more_than_five_seeds(client: TestClient):
             json={
                 "seeds": [
                     {"title": f"Song {index}", "artist": f"Artist {index}"}
-                    for index in range(6)
+                    for index in range(11)
                 ]
             },
             headers=headers,

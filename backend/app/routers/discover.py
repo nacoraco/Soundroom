@@ -27,6 +27,7 @@ from ..schemas import (
     RadioResponse,
     TrackOut,
 )
+from ..text import normalize_text
 
 logger = logging.getLogger(__name__)
 
@@ -240,8 +241,21 @@ def discover_radio(
         seed_refs,
         similar_by_seed,
         _load_local_tracks(db),
-        limit=5,
+        limit=RESULT_LIMIT + len(payload.exclude),
     )
+    excluded_keys = {
+        (normalize_text(item.title), normalize_text(item.artist))
+        for item in payload.exclude
+    }
+    recommendations = [
+        recommendation
+        for recommendation in recommendations
+        if (
+            normalize_text(recommendation.title),
+            normalize_text(recommendation.artist),
+        )
+        not in excluded_keys
+    ][: payload.limit]
     return RadioResponse(
         recommendations=[
             _recommendation_out(recommendation)

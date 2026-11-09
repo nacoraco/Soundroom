@@ -1,7 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState, type FormEvent } from "react";
 
-import { getAppSettings, updateAppSettings } from "../api";
+import {
+  getAppSettings,
+  getLlmStatus,
+  updateAppSettings,
+} from "../api";
 
 export function AdminSettingsPage() {
   const queryClient = useQueryClient();
@@ -14,6 +18,13 @@ export function AdminSettingsPage() {
   const [maxMinutes, setMaxMinutes] = useState("15");
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const llmStatusQuery = useQuery({
+    queryKey: ["llm-status"],
+    queryFn: getLlmStatus,
+    enabled: llmAutoApprove,
+    retry: false,
+    staleTime: 30_000,
+  });
 
   useEffect(() => {
     if (settingsQuery.data) {
@@ -132,6 +143,44 @@ export function AdminSettingsPage() {
                   <span className="switch-track" aria-hidden="true" />
                 </span>
               </label>
+
+              {llmAutoApprove && (
+                <div
+                  className={`llm-status ${
+                    llmStatusQuery.data?.available ? "is-ok" : "is-error"
+                  }`}
+                  role="status"
+                >
+                  <span className="eyebrow">Laya status</span>
+                  {llmStatusQuery.isLoading && (
+                    <p>Checking Ollama and the Laya model…</p>
+                  )}
+                  {llmStatusQuery.isError && (
+                    <p>The Laya status could not be checked.</p>
+                  )}
+                  {llmStatusQuery.data && (
+                    <>
+                      <p>
+                        {llmStatusQuery.data.available
+                          ? `Laya is available at ${llmStatusQuery.data.base_url} (model: ${llmStatusQuery.data.model}).`
+                          : `Laya is not available: ${
+                              llmStatusQuery.data.detail ?? "unknown reason"
+                            }.`}
+                      </p>
+                      <button
+                        type="button"
+                        className="button button-quiet button-small"
+                        onClick={() => llmStatusQuery.refetch()}
+                        disabled={llmStatusQuery.isFetching}
+                      >
+                        {llmStatusQuery.isFetching
+                          ? "Checking…"
+                          : "Check again"}
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
 
               <label className="field">
                 <span>Maximum track length in minutes</span>

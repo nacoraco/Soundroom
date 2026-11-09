@@ -3,10 +3,12 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
+from ..config import get_settings
 from ..db import get_db
 from ..deps import AuthContext, require_csrf, require_roles
+from ..llm_review import check_llm_availability
 from ..models import AppSettings, UserRole
-from ..schemas import AppSettingsOut, AppSettingsUpdate
+from ..schemas import AppSettingsOut, AppSettingsUpdate, LlmStatusOut
 from ..settings_service import get_or_create_app_settings
 
 router = APIRouter(prefix="/api/admin/settings", tags=["admin"])
@@ -18,6 +20,19 @@ def read_settings(
     db: Session = Depends(get_db),
 ) -> AppSettings:
     return get_or_create_app_settings(db)
+
+
+@router.get("/llm-status", response_model=LlmStatusOut)
+def read_llm_status(
+    _: AuthContext = Depends(require_roles(UserRole.admin)),
+) -> LlmStatusOut:
+    status = check_llm_availability(get_settings())
+    return LlmStatusOut(
+        available=status.available,
+        model=status.model,
+        base_url=status.base_url,
+        detail=status.detail,
+    )
 
 
 @router.put("", response_model=AppSettingsOut)

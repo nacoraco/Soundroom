@@ -19,6 +19,69 @@ class LlmDecision:
     reason: str
 
 
+@dataclass(frozen=True)
+class LlmAvailability:
+    available: bool
+    model: str
+    base_url: str
+    detail: str | None = None
+
+
+def check_llm_availability(config: Settings) -> LlmAvailability:
+    endpoint = f"{config.ollama_base_url.rstrip('/')}/api/tags"
+    try:
+        request = Request(endpoint, method="GET")
+        timeout = max(1, min(config.ollama_timeout_seconds, 5))
+        with urlopen(request, timeout=timeout) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except (
+        URLError,
+        TimeoutError,
+        json.JSONDecodeError,
+        OSError,
+        ValueError,
+    ) as exc:
+        return LlmAvailability(
+            available=False,
+            model=config.ollama_model,
+            base_url=config.ollama_base_url,
+            detail=f"Ollama is not reachable: {exc}",
+        )
+
+    models = body.get("models") if isinstance(body, dict) else None
+    if not isinstance(models, list):
+        return LlmAvailability(
+            available=False,
+            model=config.ollama_model,
+            base_url=config.ollama_base_url,
+            detail="Ollama returned an unexpected response.",
+        )
+
+    names = {
+        str(item.get("name"))
+        for item in models
+        if isinstance(item, dict) and item.get("name")
+    }
+    model = config.ollama_model
+    installed = any(
+        name == model or name.split(":", 1)[0] == model for name in names
+    )
+    if not installed:
+        found = ", ".join(sorted(names)) or "none"
+        return LlmAvailability(
+            available=False,
+            model=model,
+            base_url=config.ollama_base_url,
+            detail=f"Model '{model}' is not installed (found: {found}).",
+        )
+
+    return LlmAvailability(
+        available=True,
+        model=model,
+        base_url=config.ollama_base_url,
+    )
+
+
 def review_candidates_with_llm(
     query: str,
     candidates: Sequence[Any],

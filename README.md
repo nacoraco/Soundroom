@@ -10,7 +10,7 @@ Soundroom je spletna aplikacija za poslušanje osebne glasbene knjižnice. Upora
 - **F4 – Samodejni uvoz ob manjkajočem zadetku:** implementirano (skrbniške nastavitve, trajna opravila uvoja, ločen delavec z `yt-dlp`/FFmpeg, stanja opravil, uredniški pregled dvoumnih zadetkov, zahteva za uvoz iz praznega iskanja in neobvezno odločanje z modelom Laya).
 - **F5 – Predvajalnik in čakalna vrsta:** implementirano (avtorizirano pretakanje HTTP Range, predvajalnik s čakalno vrsto, Media Session, mobilna vrstica, razširjen pogled in namestljiva PWA).
 - **F6 – Osebni seznami predvajanja:** implementirano (lastniški CRUD, vrstni red skladb, iskanje in dodajanje, vlečenje za prerazporejanje, predvajanje seznama).
-- **F7 – Odkrij podobno in radio:** implementirano (Last.fm 	rack.getSimilar, lokalni in zunanji predlogi, samodejni radio z osveževanjem na zadnji skladbi, ročna prioriteta čakalne vrste, samodejni prenosi z LLM potrjevanjem in shranjevanje kot nov seznam).
+- **F7 – Odkrij podobno in radio:** implementirano (Last.fm track.getSimilar, lokalni in zunanji predlogi, samodejni radio z omejeno zgodovino poslušanja in enim priporočilom naenkrat, ročna prioriteta čakalne vrste, samodejni prenosi z LLM potrjevanjem in shranjevanje kot nov seznam).
 
 ## Dokumentacija
 
@@ -42,6 +42,7 @@ Soundroom je spletna aplikacija za poslušanje osebne glasbene knjižnice. Upora
 .
 ├── README.md
 ├── docker-compose.yml
+├── docker-compose.ollama.yml
 ├── .env.example
 ├── frontend/              # React + TypeScript + Vite
 │   ├── src/
@@ -68,6 +69,8 @@ Soundroom je spletna aplikacija za poslušanje osebne glasbene knjižnice. Upora
 
    Pred prvim zagonom obvezno spremenite vsaj `APP_SECRET_KEY`, `POSTGRES_PASSWORD`, `INITIAL_ADMIN_PASSWORD` in `INITIAL_LISTENER_PASSWORD`.
 
+   Če bo uporabniški vmesnik dostopen prek domene, dodajte gostitelja v `VITE_ALLOWED_HOSTS` (na primer `VITE_ALLOWED_HOSTS=soundroom.example.com`); Vite privzeto zavrne neznane gostitelje.
+
 2. Zaženite storitve:
 
    ```powershell
@@ -91,6 +94,17 @@ Soundroom je spletna aplikacija za poslušanje osebne glasbene knjižnice. Upora
 Računa se ustvarita ob prvem zagonu iz `INITIAL_ADMIN_*` in `INITIAL_LISTENER_*`. Gesli sta namenjeni samo lokalnemu razvoju; pred uporabo zunaj lokalnega okolja ju obvezno spremenite v `.env`.
 
 Zaustavitev: `docker compose down`. Podatki v PostgreSQL ostanejo v volumnu `pgdata`; z `docker compose down -v` jih izbrišete.
+
+### Ločena Ollama
+
+Ollama ni del osnovnega `docker-compose.yml`, ker jo lahko na strežniku že imate nameščeno ločeno. Če je še nimate, jo zaženite iz druge datoteke:
+
+```powershell
+docker compose -f docker-compose.ollama.yml up -d
+docker compose -f docker-compose.ollama.yml --profile llm-setup run --rm ollama-pull
+```
+
+Delavec uporablja `OLLAMA_BASE_URL` iz `.env`. Privzeto je `http://host.docker.internal:11434`, kar iz kontejnerja doseže gostitelja (strežnik), na katerem teče Soundroom. Ollama mora zato poslušati na naslovu, dosegljivem iz kontejnerjev (npr. `OLLAMA_HOST=0.0.0.0:11434`) ali objaviti vrata `11434`. To deluje tako z ločeno compose storitvijo kot z Ollamo, nameščeno neposredno na strežniku; za oddaljeno instanco nastavite ustrezen URL.
 
 ### Brez Dockerja
 
@@ -176,11 +190,11 @@ Spreminjajoče zahteve zahtevajo glavo `X-CSRF-Token` z vrednostjo iz odgovora p
 - Nastavitev velja za nova opravila; že ustvarjena opravila se ne prekličejo. Poslušalci in uredniki nastavitev ne morejo spreminjati.
 - Deterministični razvrščevalnik samodejno sprejme jasnega zmagovalca (ujemanje naslova/izvajalca, uradni kanal, razlika pred drugim kandidatom). Žive, koncertne in nastopne različice so vedno uvrščene za vsemi studijskimi kandidati, ne glede na skladbo, izvajalca ali priljubljenost; če obstaja vsaj ena studijska različica, LLM nikoli ne izbere žive.
 - Če je izbira nejasna in je vklopljen `llm_auto_approve`, delavec pošlje največ pet kandidatov lokalnemu modelu **Laya** prek Ollame. Laya je odločitveni model, zato ga kličemo prek Ollaminega `/v1/systemone` z izbiro med oštevilčenimi kandidati; vrne izbrano številko in verjetnosti. Izbere kandidata z najvišjo verjetnostjo; prag je privzeto 0. Če klic modela ne uspe, opravilo ostane v uredniškem pregledu.
-- Ollama je vključena v Docker Compose, model pa se ne prenaša samodejno. Po zagonu storitev ga namestite z:
+- Ollama ni vključena v osnovni Docker Compose. Zaženite jo ločeno z `docker compose -f docker-compose.ollama.yml up -d`, model pa namestite z:
   ```powershell
-  docker compose --profile llm-setup run --rm ollama-pull
+  docker compose -f docker-compose.ollama.yml --profile llm-setup run --rm ollama-pull
   ```
-  Delavec uporablja `OLLAMA_BASE_URL=http://ollama:11434` in privzeti model `laya`.
+  Delavec uporablja `OLLAMA_BASE_URL` iz `.env` (privzeto `http://host.docker.internal:11434`) in privzeti model `laya`. Če Ollama že teče na strežniku, lahko `OLLAMA_BASE_URL` kaže nanjo in ločene storitve ni treba zagnati.
 - Opravila so trajna (`rip_jobs`) in imajo stanja `queued`, `searching`, `downloading`, `processing`, `needs_review`, `completed`, `failed` in `cancelled`.
 - Ločena storitev `worker` prevzame opravila, poišče do pet kandidatov z `yt-dlp`, izloči predolge, pripravi MP3 z FFmpeg/ffprobe in doda skladbo v katalog.
 - Uredniki in skrbniki na strani **Imports** pregledajo kandidate, popravijo naslov ali izvajalca ter jih potrdijo ali zavrnejo. Zavrnitev ne prenese ničesar.
@@ -211,8 +225,8 @@ Spreminjajoče zahteve zahtevajo glavo `X-CSRF-Token` z vrednostjo iz odgovora p
 - Za vsako izhodišče API prek Last.fm `track.getSimilar` pridobi do 20 podobnih skladb; ključ `LASTFM_API_KEY` ostane samo v okolju zalednega sistema. Za `track.getSimilar` zadostuje API ključ; shared secret in callback sta potrebna le za Last.fm Web Authentication, ki ga aplikacija ne uporablja.
 - Kandidate normalizira in poveže z lokalnimi izvajalci ter naslovi. Združi ponovitve, izloči izhodišča in vrne največ 20 predlogov; lokalne skladbe so označene, zunanje pa se ob uporabi prenesejo. Če Last.fm za posamezno skladbo nima podatkov 	rack.getSimilar, se uporabi rezerva prek podobnih izvajalcev in njihovih najbolj predvajanih skladb.
 - Uvrstitev je vsota Last.fm podobnosti čez vsa izhodišča; pri izenačenju ima prednost kandidat, ki se pojavi pri več izhodiščih.
-- Ob predvajanju se samodejno ustvari radio: na začetku zadnje samodejne skladbe se pridobi novih 5 priporočil na podlagi zadnjih 5 samodejnih skladb. Samodejni del čakalne vrste se po 100 skladbah ponovno začne.
-- Ročno dodane skladbe se vstavijo takoj za trenutno skladbo oziroma za že čakajoče ročne skladbe, pred samodejne predloge. Ob ročnem dodajanju se priporočila osvežijo glede na trenutno in ročno izbrane skladbe. V razširjenem predvajalniku so **Now playing**, **Your queue** in **Recommended** ločeni; ko samodejna skladba postane trenutna, se prestavi v Now playing in seznam Recommended se skrajša.
+- Ob predvajanju se samodejno ustvari radio z omejeno zgodovino zadnjih 10 unikatnih skladb. Skladba se v zgodovino doda šele, ko postane aktivna; pri vsakem priporočilu se kot izhodišča pošljejo vse skladbe, predvajane več kot 50 %, sicer pa prvotno izbrana skladba. Hkrati se ustvari natanko eno priporočilo.
+- Ročno dodane skladbe se vstavijo takoj za trenutno skladbo oziroma za že čakajoče ročne skladbe, pred samodejne predloge. Ročno dodajanje ne ponastavi seje; skladba postane izhodišče šele, ko se predvaja več kot 50 %. Nov izbor iz iskalnika ali knjižnice v celoti ponastavi sejo. V razširjenem predvajalniku so **Now playing**, **Your queue** in **Recommended** ločeni; ko samodejna skladba postane trenutna, se prestavi v Now playing in seznam Recommended se skrajša.
 - Zunanje skladbe se prenesejo prek obstoječega uvoznega delavca; za tovrstna opravila je vsiljeno LLM samodejno potrjevanje. Če Last.fm ni dosegljiv ali ključ ni nastavljen, predvajanje, iskanje in seznami delujejo naprej.
 - V pogledu **Discover** je mogoče zunanje predloge prenesti in dodati v čakalno vrsto, pri shranjevanju seznama pa se vse skladbe prenesejo, dodajo v nov osebni seznam in nato v čakalno vrsto.
 ## Nalaganje glasbe (F2)

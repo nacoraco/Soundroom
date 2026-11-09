@@ -193,6 +193,41 @@ def make_memory_track(title: str, artist_name: str = "Artist") -> Track:
     )
 
 
+def test_local_matching_rejects_version_variants():
+    studio = make_memory_track("Shared Song", "Shared Artist")
+    live = make_memory_track("Shared Song (Live)", "Shared Artist")
+    remix = make_memory_track("Shared Song (Remix)", "Shared Artist")
+    radio_edit = make_memory_track("Shared Song (Radio Edit)", "Shared Artist")
+    other_artist = make_memory_track("Shared Song", "Other Artist")
+    youtube = make_memory_track(
+        "Shared Artist - Shared Song (Official Video)",
+        "Shared Artist",
+    )
+    similar = SimilarTrack("Shared Song", "Shared Artist", 0.9)
+
+    assert match_local_track(similar, [studio]) is studio
+    assert match_local_track(similar, [live]) is None
+    assert match_local_track(similar, [remix]) is None
+    assert match_local_track(similar, [radio_edit]) is None
+    assert match_local_track(similar, [other_artist]) is None
+    assert match_local_track(similar, [youtube]) is youtube
+
+    for versioned in (
+        SimilarTrack("Shared Song (Live)", "Shared Artist", 0.9),
+        SimilarTrack("Shared Song (Remix)", "Shared Artist", 0.9),
+        SimilarTrack("Shared Song (Radio Edit)", "Shared Artist", 0.9),
+    ):
+        assert match_local_track(versioned, [studio]) is None
+
+    assert (
+        match_local_track(
+            SimilarTrack("Shared Song (Live at Wembley)", "Shared Artist", 0.9),
+            [live],
+        )
+        is live
+    )
+
+
 def test_build_recommendations_merges_ranks_excludes_and_limits():
     first = make_memory_track("Candidate A (Official Video)", "Artist A")
     second = make_memory_track("Candidate B", "Artist B")

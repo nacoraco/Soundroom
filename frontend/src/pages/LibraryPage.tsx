@@ -141,7 +141,7 @@ export function LibraryPage() {
 
   function handleTrackAction(action: "play" | "queue", track: Track) {
     if (action === "play") {
-      playTrack(track, tracks);
+      playTrack(track);
       setNotice(`Playing “${track.title}”.`);
       return;
     }

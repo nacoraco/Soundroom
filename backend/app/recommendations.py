@@ -9,6 +9,26 @@ from .models import Track
 from .text import normalize_text
 
 TRAILING_BRACKETS = re.compile(r"\s*[\(\[][^)\]]*[\)\]]\s*$")
+VERSION_MARKERS = (
+    "live",
+    "concert",
+    "performance",
+    "unplugged",
+    "remix",
+    "edit",
+    "cover",
+    "karaoke",
+    "instrumental",
+    "acoustic",
+    "demo",
+    "extended",
+    "nightcore",
+    "slowed",
+    "sped up",
+    "reverb",
+    "session",
+    "bbc",
+)
 SIMILAR_LIMIT = 20
 RESULT_LIMIT = 20
 MAX_RECOMMENDATION_HISTORY = 10
@@ -265,6 +285,15 @@ def _strip_trailing_brackets(value: str) -> str:
     return result
 
 
+def _version_markers(title: str) -> frozenset[str]:
+    normalized = normalize_text(title)
+    return frozenset(
+        marker
+        for marker in VERSION_MARKERS
+        if re.search(rf"\b{re.escape(marker)}\b", normalized)
+    )
+
+
 def clean_seed_metadata(artist: str, title: str) -> tuple[str, str]:
     artist = artist.strip()
     title = _strip_trailing_brackets(title)
@@ -295,40 +324,22 @@ def lastfm_seed_metadata(track: Track) -> tuple[str, str]:
 
 
 def _match_quality(similar: SimilarTrack, track: Track) -> float:
-    candidate_title = normalize_text(similar.title)
-    local_title = normalize_text(track.title)
-    candidate_artist = normalize_text(similar.artist)
-    local_artist = normalize_text(track.artist.name)
-    if not candidate_title or not candidate_artist:
-        return 0.0
-
-    candidate_title_compact = candidate_title.replace(" ", "")
-    local_title_compact = local_title.replace(" ", "")
-    candidate_artist_compact = candidate_artist.replace(" ", "")
-    local_artist_compact = local_artist.replace(" ", "")
-    combined_compact = local_title_compact + local_artist_compact
-
-    title_matches = (
-        candidate_title == local_title
-        or candidate_title in local_title
-        or candidate_title_compact in local_title_compact
+    similar_artist, similar_title = clean_seed_metadata(
+        similar.artist, similar.title
     )
-    artist_matches = (
-        candidate_artist == local_artist
-        or candidate_artist in local_artist
-        or local_artist in candidate_artist
-        or (
-            len(candidate_artist_compact) >= 3
-            and candidate_artist_compact in combined_compact
-        )
+    local_artist, local_title = clean_seed_metadata(
+        track.artist.name, track.title
     )
-    if not title_matches or not artist_matches:
+    if not similar_title or not similar_artist:
         return 0.0
-
-    quality = 0.0
-    quality += 2.0 if candidate_title == local_title else 1.0
-    quality += 2.0 if candidate_artist == local_artist else 1.0
-    return quality
+    if (
+        normalize_text(similar_artist) != normalize_text(local_artist)
+        or normalize_text(similar_title) != normalize_text(local_title)
+    ):
+        return 0.0
+    if _version_markers(similar.title) != _version_markers(track.title):
+        return 0.0
+    return 1.0
 
 
 def match_local_track(

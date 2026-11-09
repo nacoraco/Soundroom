@@ -4,6 +4,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from .models import RipJobStatus, TrackSource, UserRole
+from .recommendations import MAX_RECOMMENDATION_HISTORY
 
 
 class UserOut(BaseModel):
@@ -289,7 +290,12 @@ class RadioSeed(BaseModel):
 
 
 class RadioRequest(BaseModel):
-    seeds: list[RadioSeed] = Field(min_length=1, max_length=5)
+    seeds: list[RadioSeed] = Field(
+        min_length=1,
+        max_length=MAX_RECOMMENDATION_HISTORY,
+    )
+    limit: int = Field(default=1, ge=1, le=20)
+    exclude: list[RadioSeed] = Field(default_factory=list, max_length=50)
 
 
 class RadioResponse(BaseModel):

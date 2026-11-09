@@ -226,7 +226,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       return;
     }
     dispatch({ type: "importCompleted", track: completedTrackQuery.data });
-    queryClient.invalidateQueries({ queryKey: ["tracks"] });
+    queryClient.invalidateQueries({ queryKey: ["tracks"], refetchType: "none" });
   }, [completedTrackQuery.data, pendingJobId, queryClient]);
 
   useEffect(() => {
@@ -306,7 +306,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
                   return;
                 }
                 dispatch({ type: "replacePending", pendingId, track });
-                queryClient.invalidateQueries({ queryKey: ["tracks"] });
+                queryClient.invalidateQueries({ queryKey: ["tracks"], refetchType: "none" });
               } catch (error) {
                 dispatch({
                   type: "setPendingState",
@@ -598,7 +598,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
               setQueuedImports((current) =>
                 current.filter((item) => item.id !== localId),
               );
-              queryClient.invalidateQueries({ queryKey: ["tracks"] });
+              queryClient.invalidateQueries({ queryKey: ["tracks"], refetchType: "none" });
             } catch (error) {
               updateEntry((current) => ({
                 ...current,

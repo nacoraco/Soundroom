@@ -148,33 +148,52 @@ def search_candidates(query: str, limit: int = 5) -> list[Candidate]:
         "noplaylist": True,
         "socket_timeout": 15,
     }
-    with yt_dlp.YoutubeDL(options) as ydl:
-        info = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
+    search_queries = [query]
+    for suffix in ("lyrics", "audio"):
+        fallback = f"{query} {suffix}".strip()
+        if fallback not in search_queries:
+            search_queries.append(fallback)
 
-    entries = list(info.get("entries") or []) if info else []
     candidates: list[Candidate] = []
-    for entry in entries[:limit]:
-        url = _candidate_url(entry)
-        title = str(entry.get("track") or entry.get("title") or "")
-        artist = _candidate_artist(title, entry)
-        duration = entry.get("duration")
-        uploader = entry.get("channel") or entry.get("uploader")
-        view_count = entry.get("view_count")
-        if not url or not title:
-            continue
-        candidates.append(
-            Candidate(
-                url=url,
-                title=str(title),
-                artist=str(artist) if artist else None,
-                duration_seconds=int(duration) if duration is not None else None,
-                uploader=str(uploader) if uploader else None,
-                view_count=int(view_count) if view_count is not None else None,
-                video_id=_candidate_video_id(entry),
-                thumbnail_url=_candidate_thumbnail(entry),
-            )
-        )
-    return candidates
+    seen_urls: set[str] = set()
+    with yt_dlp.YoutubeDL(options) as ydl:
+        for search_query in search_queries:
+            try:
+                info = ydl.extract_info(
+                    f"ytsearch{limit}:{search_query}", download=False
+                )
+            except Exception:
+                continue
+            entries = list(info.get("entries") or []) if info else []
+            for entry in entries[:limit]:
+                url = _candidate_url(entry)
+                title = str(entry.get("track") or entry.get("title") or "")
+                artist = _candidate_artist(title, entry)
+                duration = entry.get("duration")
+                uploader = entry.get("channel") or entry.get("uploader")
+                view_count = entry.get("view_count")
+                if not url or not title or url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                candidates.append(
+                    Candidate(
+                        url=url,
+                        title=str(title),
+                        artist=str(artist) if artist else None,
+                        duration_seconds=(
+                            int(duration) if duration is not None else None
+                        ),
+                        uploader=str(uploader) if uploader else None,
+                        view_count=(
+                            int(view_count) if view_count is not None else None
+                        ),
+                        video_id=_candidate_video_id(entry),
+                        thumbnail_url=_candidate_thumbnail(entry),
+                    )
+                )
+            if len(candidates) >= limit:
+                break
+    return candidates[:limit]
 
 
 def _match_score(query: str, candidate: Candidate) -> float:
@@ -471,11 +490,24 @@ def process_job(
                 job.query_text, candidates, max_seconds
             )
             if candidate is None:
-                _fail_job(
-                    db,
+                if not candidates:
+                    message = (
+                        "No external search results found for this track."
+                    )
+                else:
+                    message = (
+                        "No candidate within the "
+                        f"{max(1, max_track_minutes)}-minute duration limit "
+                        f"({len(candidates)} result(s) checked)."
+                    )
+                logger.warning(
+                    "Import job %s found no suitable candidate for %r "
+                    "(%d search results)",
                     job_id,
-                    "No suitable candidate found within the duration limit.",
+                    job.query_text,
+                    len(candidates),
                 )
+                _fail_job(db, job_id, message)
                 return
 
             llm_attempted = False

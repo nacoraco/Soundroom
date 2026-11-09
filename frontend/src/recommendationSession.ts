@@ -73,6 +73,13 @@ export function updateRecommendationProgress(
   return changed ? next : history;
 }
 
+export function removeRecommendationHistoryTrack(
+  history: RecommendationHistoryEntry[],
+  trackId: string,
+): RecommendationHistoryEntry[] {
+  return history.filter((entry) => entry.track.id !== trackId);
+}
+
 export function replaceRecommendationHistoryTrack(
   history: RecommendationHistoryEntry[],
   previousTrackId: string,

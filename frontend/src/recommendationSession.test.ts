@@ -5,6 +5,7 @@ import {
   MAX_RECOMMENDATION_HISTORY,
   addRecommendationHistoryEntry,
   createRecommendationHistoryEntry,
+  removeRecommendationHistoryTrack,
   replaceRecommendationHistoryTrack,
   selectRecommendationSeeds,
   updateRecommendationProgress,
@@ -91,6 +92,20 @@ describe("recommendation history", () => {
 
     expect(history[0].progressSeconds).toBe(80);
     expect(history[0].durationSeconds).toBe(200);
+  });
+
+  it("removes a failed recommendation from history", () => {
+    const first = track("first", "First");
+    const second = track("second", "Second");
+    const history = [
+      createRecommendationHistoryEntry(first, 0),
+      createRecommendationHistoryEntry(second, 1),
+    ];
+
+    const next = removeRecommendationHistoryTrack(history, "second");
+
+    expect(next).toHaveLength(1);
+    expect(next[0].track.id).toBe("first");
   });
 
   it("replaces a pending import with the resolved track", () => {

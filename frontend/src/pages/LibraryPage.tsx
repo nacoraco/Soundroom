@@ -10,7 +10,15 @@ import { Link, useSearchParams } from "react-router-dom";
 import { deleteTrack, listTracks } from "../api";
 import { useAuth } from "../auth";
 import { ImportRequest } from "../components/ImportRequest";
+import {
+  CloseIcon,
+  PlayIcon,
+  PlusIcon,
+  SearchIcon,
+  TrashIcon,
+} from "../components/playerIcons";
 import { usePlayer } from "../player";
+import { artStyle, trackInitials } from "../playerVisuals";
 import type { Track } from "../types";
 
 function formatDuration(seconds: number): string {
@@ -208,7 +216,10 @@ export function LibraryPage() {
         <form className="search-form" role="search" onSubmit={applySearch}>
           <div className="search-field">
             <span className="search-prefix mono" aria-hidden="true">
-              Search /
+              <span className="search-prefix-label">Search /</span>
+              <span className="search-prefix-icon">
+                <SearchIcon size={18} />
+              </span>
             </span>
             <input
               type="search"
@@ -226,12 +237,19 @@ export function LibraryPage() {
                 onClick={clearSearch}
                 aria-label="Clear search"
               >
-                ×
-              </button>
+                <CloseIcon size={16} />
+            </button>
             )}
           </div>
-          <button type="submit" className="button button-primary search-submit">
-            Search
+          <button
+            type="submit"
+            className="button button-primary search-submit"
+            aria-label="Search library"
+          >
+            <span className="search-submit-label">Search</span>
+            <span className="search-submit-icon">
+              <SearchIcon size={20} />
+            </span>
           </button>
         </form>
         <div className="search-meta">
@@ -379,36 +397,49 @@ export function LibraryPage() {
                   currentTrack?.id === track.id ? "is-current-track" : undefined
                 }
                 key={track.id}
+                style={artStyle(track)}
               >
-                <span className="track-number mono">
-                  {String((page - 1) * pageSize + index + 1).padStart(2, "0")}
-                </span>
-                <span className="track-main">
-                  <strong>{track.title}</strong>
-                  <span>
-                    {track.artist_name}
-                    {track.album_title ? ` · ${track.album_title}` : ""}
+                <button
+                  type="button"
+                  className="track-play-surface"
+                  onClick={() => handleTrackAction("play", track)}
+                  aria-label={`Play ${track.title}`}
+                >
+                  <span className="track-number mono">
+                    {String((page - 1) * pageSize + index + 1).padStart(2, "0")}
                   </span>
-                </span>
-                <span className="track-duration mono">
-                  {formatDuration(track.duration_seconds)}
-                </span>
+                  <span className="track-artwork" aria-hidden="true">
+                    <span>{trackInitials(track)}</span>
+                  </span>
+                  <span className="track-main">
+                    <strong>{track.title}</strong>
+                    <span>
+                      {track.artist_name}
+                      {track.album_title ? ` · ${track.album_title}` : ""}
+                    </span>
+                  </span>
+                  <span className="track-duration mono">
+                    {formatDuration(track.duration_seconds)}
+                  </span>
+                </button>
                 <span className="track-actions">
                   <button
                     type="button"
-                    className="track-action"
+                    className="track-action track-action-play"
                     onClick={() => handleTrackAction("play", track)}
                     title="Play now"
+                    aria-label={`Play ${track.title}`}
                   >
-                    Play
+                    <PlayIcon size={16} />
                   </button>
                   <button
                     type="button"
                     className="track-action track-action-quiet"
                     onClick={() => handleTrackAction("queue", track)}
                     title="Add to queue"
+                    aria-label={`Add ${track.title} to queue`}
                   >
-                    + Queue
+                    <PlusIcon size={18} />
                   </button>
                   {user?.role === "admin" && (
                     <button
@@ -417,8 +448,9 @@ export function LibraryPage() {
                       onClick={() => handleDeleteTrack(track)}
                       disabled={deleteMutation.isPending}
                       title="Delete from server"
+                      aria-label={`Delete ${track.title} from server`}
                     >
-                      Delete
+                      <TrashIcon size={17} />
                     </button>
                   )}
                 </span>

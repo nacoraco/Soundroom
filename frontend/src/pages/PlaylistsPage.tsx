@@ -3,6 +3,17 @@ import { useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 
 import { ApiError, createPlaylist, listPlaylists } from "../api";
+import { PlusIcon } from "../components/playerIcons";
+
+function playlistInitials(name: string): string {
+  const initials = name
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((word) => word[0]?.toUpperCase() ?? "")
+    .join("");
+  return initials || "SR";
+}
 
 function formatDuration(seconds: number): string {
   const minutes = Math.floor(seconds / 60);
@@ -103,7 +114,7 @@ export function PlaylistsPage() {
               className="button button-primary button-block"
               disabled={createMutation.isPending}
             >
-              {createMutation.isPending ? "Creating…" : "Create playlist"}
+              {createMutation.isPending ? "Creating…" : <><PlusIcon size={16} /> Create playlist</>}
             </button>
           </form>
           {notice && (
@@ -161,6 +172,9 @@ export function PlaylistsPage() {
                   key={playlist.id}
                   to={`/playlists/${playlist.id}`}
                 >
+                  <span className="playlist-card-art" aria-hidden="true">
+                    <span>{playlistInitials(playlist.name)}</span>
+                  </span>
                   <span className="playlist-card-index mono">
                     {String(index + 1).padStart(2, "0")}
                   </span>

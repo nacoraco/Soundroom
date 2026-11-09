@@ -12,6 +12,7 @@ import { PlaylistDetailPage } from "./pages/PlaylistDetailPage";
 import { PlaylistsPage } from "./pages/PlaylistsPage";
 import { LoginPage } from "./pages/LoginPage";
 import { UploadPage } from "./pages/UploadPage";
+import { PlayerProvider } from "./player";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -25,32 +26,37 @@ const queryClient = new QueryClient({
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <Routes>
-          <Route path="/login" element={<LoginPage />} />
-          <Route element={<ProtectedRoute />}>
-            <Route element={<AppLayout />}>
-              <Route path="/library" element={<LibraryPage />} />
-              <Route path="/playlists" element={<PlaylistsPage />} />
-              <Route path="/playlists/:playlistId" element={<PlaylistDetailPage />} />
-              <Route path="/discover" element={<DiscoverPage />} />
-              <Route element={<EditorRoute />}>
-                <Route path="/upload" element={<UploadPage />} />
-                <Route path="/imports" element={<ImportJobsPage />} />
-              </Route>
-              <Route element={<AdminRoute />}>
-                <Route path="/admin/users" element={<AdminUsersPage />} />
+      <PlayerProvider>
+        <BrowserRouter>
+          <Routes>
+            <Route path="/login" element={<LoginPage />} />
+            <Route element={<ProtectedRoute />}>
+              <Route element={<AppLayout />}>
+                <Route path="/library" element={<LibraryPage />} />
+                <Route path="/playlists" element={<PlaylistsPage />} />
                 <Route
-                  path="/admin/settings"
-                  element={<AdminSettingsPage />}
+                  path="/playlists/:playlistId"
+                  element={<PlaylistDetailPage />}
                 />
+                <Route path="/discover" element={<DiscoverPage />} />
+                <Route element={<EditorRoute />}>
+                  <Route path="/upload" element={<UploadPage />} />
+                  <Route path="/imports" element={<ImportJobsPage />} />
+                </Route>
+                <Route element={<AdminRoute />}>
+                  <Route path="/admin/users" element={<AdminUsersPage />} />
+                  <Route
+                    path="/admin/settings"
+                    element={<AdminSettingsPage />}
+                  />
+                </Route>
               </Route>
             </Route>
-          </Route>
-          <Route path="/" element={<Navigate to="/library" replace />} />
-          <Route path="*" element={<Navigate to="/library" replace />} />
-        </Routes>
-      </BrowserRouter>
+            <Route path="/" element={<Navigate to="/library" replace />} />
+            <Route path="*" element={<Navigate to="/library" replace />} />
+          </Routes>
+        </BrowserRouter>
+      </PlayerProvider>
     </QueryClientProvider>
   );
 }

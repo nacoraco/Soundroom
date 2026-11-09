@@ -89,7 +89,12 @@ export function PlayerBar() {
         )}
       </button>
 
-      <div className="player-bar-meta">
+      <button
+        type="button"
+        className="player-bar-meta"
+        onClick={() => setExpanded(true)}
+        aria-label={`Open full player for ${currentTrack.title}`}
+      >
         <span className="eyebrow player-bar-status">{status}</span>
         <strong className="player-bar-title" title={currentTrack.title}>
           {currentTrack.title}
@@ -98,7 +103,7 @@ export function PlayerBar() {
           {currentTrack.artist_name}
           {currentTrack.album_title ? ` · ${currentTrack.album_title}` : ""}
         </span>
-      </div>
+      </button>
 
       <div className="player-bar-transport">
         <button

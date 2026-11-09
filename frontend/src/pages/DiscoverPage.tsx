@@ -16,6 +16,7 @@ import {
   getTrack,
   listTracks,
 } from "../api";
+import { PlayIcon, PlusIcon, QueueIcon } from "../components/playerIcons";
 import { usePlayer } from "../player";
 import { formatTime } from "../playerVisuals";
 import type { DiscoverRecommendation, Track } from "../types";
@@ -366,28 +367,34 @@ export function DiscoverPage() {
                           <>
                             <button
                               type="button"
-                              className="button button-quiet button-small"
+                              className="track-action track-action-play"
                               onClick={() => playTrack(localTrack, resultTracks)}
+                              aria-label={`Play ${localTrack.title}`}
+                              title="Play now"
                             >
-                              Play
+                              <PlayIcon size={15} />
                             </button>
                             <button
                               type="button"
-                              className="button button-quiet button-small"
+                              className="track-action track-action-quiet"
                               onClick={() => enqueue(localTrack)}
+                              aria-label={`Add ${localTrack.title} to queue`}
+                              title="Add to queue"
                             >
-                              + Queue
+                              <PlusIcon size={17} />
                             </button>
                           </>
                         ) : (
                           <button
                             type="button"
-                            className="button button-quiet button-small"
+                            className="track-action track-action-quiet"
                             onClick={() =>
                               void queueExternalRecommendation(recommendation)
                             }
+                            aria-label={`Download and queue ${recommendation.title}`}
+                            title="Download and queue"
                           >
-                            Download + queue
+                            <QueueIcon size={17} />
                           </button>
                         )}
                       </span>

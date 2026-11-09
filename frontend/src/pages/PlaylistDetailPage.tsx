@@ -12,8 +12,14 @@ import {
   reorderPlaylistItems,
   updatePlaylist,
 } from "../api";
+import {
+  ArrowDownIcon,
+  ArrowUpIcon,
+  PlayIcon,
+  RemoveIcon,
+} from "../components/playerIcons";
 import { usePlayer } from "../player";
-import { formatTime } from "../playerVisuals";
+import { artStyle, formatTime, trackInitials } from "../playerVisuals";
 import type { PlaylistDetail, PlaylistItem, Track } from "../types";
 
 function errorMessage(error: unknown, fallback: string): string {
@@ -337,6 +343,7 @@ export function PlaylistDetailPage() {
                       isCurrent ? "is-current-track" : ""
                     }`}
                     key={item.id}
+                    style={artStyle(track)}
                     onDragOver={(event) => {
                       event.preventDefault();
                       setDragOverId(item.id);
@@ -363,27 +370,38 @@ export function PlaylistDetailPage() {
                     >
                       ::
                     </span>
-                    <span className="playlist-item-number mono">
-                      {String(index + 1).padStart(2, "0")}
-                    </span>
-                    <span className="playlist-item-copy">
-                      <strong>{track.title}</strong>
-                      <span>
-                        {track.artist_name}
-                        {track.album_title ? ` · ${track.album_title}` : ""}
+                    <button
+                      type="button"
+                      className="playlist-item-play"
+                      onClick={() => playTrack(track, tracks)}
+                      aria-label={`Play ${track.title}`}
+                    >
+                      <span className="playlist-item-number mono">
+                        {String(index + 1).padStart(2, "0")}
                       </span>
-                    </span>
-                    <span className="playlist-item-duration mono">
-                      {formatTime(track.duration_seconds)}
-                    </span>
+                      <span className="track-artwork" aria-hidden="true">
+                        <span>{trackInitials(track)}</span>
+                      </span>
+                      <span className="playlist-item-copy">
+                        <strong>{track.title}</strong>
+                        <span>
+                          {track.artist_name}
+                          {track.album_title ? ` · ${track.album_title}` : ""}
+                        </span>
+                      </span>
+                      <span className="playlist-item-duration mono">
+                        {formatTime(track.duration_seconds)}
+                      </span>
+                    </button>
                     <span className="playlist-item-actions">
                       <button
                         type="button"
-                        className="playlist-item-button"
+                        className="playlist-icon-button playlist-item-play-action"
                         onClick={() => playTrack(track, tracks)}
                         aria-label={`Play ${track.title}`}
+                        title="Play now"
                       >
-                        Play
+                        <PlayIcon size={15} />
                       </button>
                       <button
                         type="button"
@@ -393,7 +411,7 @@ export function PlaylistDetailPage() {
                         aria-label={`Move ${track.title} up`}
                         title="Move up"
                       >
-                        ↑
+                        <ArrowUpIcon size={16} />
                       </button>
                       <button
                         type="button"
@@ -406,7 +424,7 @@ export function PlaylistDetailPage() {
                         aria-label={`Move ${track.title} down`}
                         title="Move down"
                       >
-                        ↓
+                        <ArrowDownIcon size={16} />
                       </button>
                       <button
                         type="button"
@@ -416,7 +434,7 @@ export function PlaylistDetailPage() {
                         aria-label={`Remove ${track.title} from playlist`}
                         title="Remove from playlist"
                       >
-                        ×
+                        <RemoveIcon size={15} />
                       </button>
                     </span>
                   </li>

@@ -157,12 +157,15 @@ npm run build
 | `GET` | `/api/tracks/{id}/stream` | Avtorizirano pretakanje MP3 s podporo `Range` (200/206/416) |
 | `POST` | `/api/tracks` | Nalaganje MP3 (urednik ali skrbnik, multipart) |
 | `DELETE` | `/api/tracks/{id}` | Trajni izbris skladbe in datoteke z diska (skrbnik) |
+| `POST` | `/api/discover/similar` | Predlogi podobnih skladb (lokalne in zunanje) |
+| `POST` | `/api/discover/radio` | Predlogi za samodejni radio |
 | `GET/POST` | `/api/playlists` | Seznam oziroma ustvarjanje lastnih seznamov predvajanja |
 | `GET/PATCH/DELETE` | `/api/playlists/{id}` | Podrobnosti, preimenovanje in brisanje lastnega seznama |
 | `POST` | `/api/playlists/{id}/items` | Dodajanje skladbe na konec seznama |
 | `DELETE` | `/api/playlists/{id}/items/{item_id}` | Odstranitev skladbe in strnitev položajev |
 | `PUT` | `/api/playlists/{id}/items/reorder` | Shranjevanje novega vrstnega reda |
 | `GET/PUT` | `/api/admin/settings` | Skrbniške nastavitve samodejnega uvoza |
+| `GET` | `/api/admin/settings/llm-status` | Preverjanje dosegljivosti modela Laya (skrbnik) |
 | `GET` | `/api/import-jobs/config` | Razpoložljivost samodejnega uvoza za prijavljene uporabnike |
 | `GET` | `/api/import-jobs/preview?q=` | Predogled zunanjih izdaj za ročno izbiro (brez LLM) |
 | `POST` | `/api/import-jobs` | Zahteva za uvoz manjkajoče skladbe, z izbrano zunanjo izdajo ali samodejnim iskanjem |
@@ -223,7 +226,7 @@ Spreminjajoče zahteve zahtevajo glavo `X-CSRF-Token` z vrednostjo iz odgovora p
 
 - Poslušalec izbere eno do tri skladbe iz lokalne knjižnice. Vmesnik onemogoči četrto izhodišče. Rezultati vsebujejo lokalne in zunanje skladbe.
 - Za vsako izhodišče API prek Last.fm `track.getSimilar` pridobi do 20 podobnih skladb; ključ `LASTFM_API_KEY` ostane samo v okolju zalednega sistema. Za `track.getSimilar` zadostuje API ključ; shared secret in callback sta potrebna le za Last.fm Web Authentication, ki ga aplikacija ne uporablja.
-- Kandidate normalizira in poveže z lokalnimi izvajalci ter naslovi. Združi ponovitve, izloči izhodišča in vrne največ 20 predlogov; lokalne skladbe so označene, zunanje pa se ob uporabi prenesejo. Če Last.fm za posamezno skladbo nima podatkov 	rack.getSimilar, se uporabi rezerva prek podobnih izvajalcev in njihovih najbolj predvajanih skladb.
+- Kandidate normalizira in poveže z lokalnimi izvajalci ter naslovi. Združi ponovitve, izloči izhodišča in vrne največ 20 predlogov; lokalne skladbe so označene, zunanje pa se ob uporabi prenesejo. Če Last.fm za posamezno skladbo nima podatkov `track.getSimilar`, se uporabi rezerva prek podobnih izvajalcev in njihovih najbolj predvajanih skladb.
 - Uvrstitev je vsota Last.fm podobnosti čez vsa izhodišča; pri izenačenju ima prednost kandidat, ki se pojavi pri več izhodiščih.
 - Ob predvajanju se samodejno ustvari radio z omejeno zgodovino zadnjih 10 unikatnih skladb. Skladba se v zgodovino doda šele, ko postane aktivna; pri vsakem priporočilu se kot izhodišča pošljejo vse skladbe, predvajane več kot 50 %, sicer pa prvotno izbrana skladba. V pripravljenosti sta največ dve priporočili; ko eno postane trenutna skladba, se takoj zahteva eno novo, da se zaloga spet dopolni na dve, pri čemer se nikoli ne ustvarita dve naenkrat.
 - Ročno dodane skladbe se vstavijo takoj za trenutno skladbo oziroma za že čakajoče ročne skladbe, pred samodejne predloge. Ročno dodajanje ne ponastavi seje; skladba postane izhodišče šele, ko se predvaja več kot 50 %. Nov izbor iz iskalnika ali knjižnice v celoti ponastavi sejo. V razširjenem predvajalniku so **Now playing**, **Your queue** in **Recommended** ločeni; ko samodejna skladba postane trenutna, se prestavi v Now playing in seznam Recommended se skrajša.
@@ -244,5 +247,5 @@ Projekt uporablja strategijo **GitHub Flow**:
 
 1. Za vsako funkcionalnost se ustvari kratkotrajna veja z opisnim imenom (npr. `feature/f1-auth`).
 2. Spremembe se objavijo v veji in združijo v `main` izključno prek pull requesta.
-3. Veja `main` je zaščitena: neposredni pushi, prisilno prepisovanje zgodovine in brisanje veje niso dovoljeni.
+3. Veja `main` se spreminja izključno prek pull requestov; priporočena zaščita veje preprečuje neposredne push-e, prisilno prepisovanje zgodovine in brisanje veje.
 4. Pomembne arhitekturne odločitve se dokumentirajo kot nov ADR; sprememba obstoječe odločitve se zabeleži z novim ADR-jem, ki navede, katero odločitev nadomešča.

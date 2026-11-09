@@ -2,6 +2,8 @@
 
 Spodnji wireframes so osnutki osnovnega izgleda aplikacije (low-fidelity): sivi okvirji, oznake delov vmesnika in vzorčni podatki. Končna barvna podoba, slike naslovnic in tipografija niso predmet tega dokumenta. Besedila v vmesniku so v angleščini, ker je to privzeti jezik uporabniškega vmesnika Soundroom (glej dokument [funkcionalnosti in obseg](02-funkcionalnosti-in-obseg.md)).
 
+Wireframes so izvirni osnutki iz faze načrtovanja. Med implementacijo sta se nekoliko razvila predvsem F4 (predogled zunanjih izdaj) in F7 (zunanje skladbe v priporočilih), zato so v opisih posameznih pogledov navedene tudi razlike med sliko in aktualno različico.
+
 Vsak wireframe je povezan z uporabniškimi zgodbami iz dokumenta [uporabniške zgodbe](05-uporabniske-zgodbe.md); pripadajoča zgodba je navedena v opisu. Slike so v mapi `wireframes/`.
 
 ## WF-01: Prijavna stran
@@ -14,13 +16,13 @@ Prikazuje prijavni obrazec: polji za e-poštni naslov in geslo, enotno sporočil
 
 ![Iskanje z rezultati](wireframes/WF-02-search-results.png)
 
-Prikazuje pogled knjižnice z iskalnim poljem in seznamom rezultatov: naslov, izvajalec, album, trajanje, gumbi za dodajanje v čakalno vrsto in na seznam, paginacija po 20 zadetkov. Spodnja vrstica je predvajalnik, ki ostane med brskanjem po straneh; stranska navigacija povezuje knjižnico, odkrivanje podobnih skladb in sezname. Povezuje zgodbi **US-05** in **US-09**.
+Prikazuje pogled knjižnice z iskalnim poljem in seznamom rezultatov: naslov, izvajalec, album, trajanje, gumbi za dodajanje v čakalno vrsto in na seznam, paginacija po 20 zadetkov. Spodnja vrstica je predvajalnik, ki ostane med brskanjem po straneh; stranska navigacija povezuje knjižnico, odkrivanje podobnih skladb in sezname. V aktualni implementaciji se pod lokalnimi zadetki prikažejo še zunanje izdaje z YouTubom, kadar je samodejni uvoz vklopljen. Povezuje zgodbi **US-05** in **US-09**.
 
 ## WF-03: Iskanje brez zadetkov s stanjem uvoza
 
 ![Iskanje brez zadetkov](wireframes/WF-03-search-empty-import.png)
 
-Prikazuje stanje, ko iskanje ni vrnilo zadetkov: sporočilo o brez zadetkov, gumb za pridobitev skladbe z YouTuba (viden samo, kadar je skrbnik vklopil samodejni uvoz) ter kartica uvoznega opravila s stanji (Queued, Searching, Downloading, Processing), ki se samodejno osvežuje. Predvajanje prej izbrane skladbe se med tem nadaljuje. Povezuje zgodbo **US-06**.
+Wireframe prikazuje prvotni tok: sporočilo o brez zadetkov, gumb za pridobitev skladbe z YouTuba (viden samo, kadar je skrbnik vklopil samodejni uvoz) ter kartico uvoznega opravila s stanji (Queued, Searching, Downloading, Processing), ki se samodejno osvežuje. Predvajanje prej izbrane skladbe se med tem nadaljuje. V aktualni implementaciji se namesto gumba prikaže seznam zunanjih izdaj s sličico, naslovom, izvajalcem, trajanjem in številom ogledov; vsaka izdaja ima **Play** in **+ Queue**, stanje opravila pa je vidno v predvajalniku oziroma čakalni vrsti. Povezuje zgodbo **US-06**.
 
 ## WF-04: Skladba v predvajanju s čakalno vrsto
 
@@ -32,7 +34,7 @@ Prikazuje celozaslonski predvajalnik: prostor za naslovnico (označen z diagonal
 
 ![Odkrij podobno](wireframes/WF-05-discover-similar.png)
 
-Prikazuje priporočilni pogled: izbira izhodiščnih skladb (do treh), iskanje podobnih skladb, seznam predlogov s stopnjo ujemanja ter možnost shranjevanja predloga kot nov osebni seznam. Opomba pojasnjuje, da so predlagane samo skladbe, ki so že v lokalni knjižnici, in da priporočilo ne sproži prenosa. Povezuje zgodbo **US-12**.
+Prikazuje priporočilni pogled: izbira izhodiščnih skladb (do treh), iskanje podobnih skladb, seznam predlogov s stopnjo ujemanja ter možnost shranjevanja predloga kot nov osebni seznam. Opomba na sliki je iz prvotne zasnove (»samo lokalne skladbe, brez prenosa«); aktualna implementacija ponuja lokalne in zunanje predloge, zunanje pa se prenesejo šele z uporabnikovo izbiro prenosa v čakalno vrsto ali shranjevanjem seznama. Povezuje zgodbo **US-12**.
 
 ## WF-06: Osebni seznam predvajanja
 

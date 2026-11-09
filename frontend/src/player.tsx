@@ -26,6 +26,7 @@ import {
 } from "./playerState";
 import {
   RECOMMENDATION_BATCH_SIZE,
+  RECOMMENDATION_BUFFER_SIZE,
   addRecommendationHistoryEntry,
   createRecommendationHistoryEntry,
   removeRecommendationHistoryTrack,
@@ -1100,8 +1101,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     const snapshot = stateRef.current;
     const autoAhead = snapshot.queue
       .slice(snapshot.currentIndex + 1)
-      .some((track) => track.origin === "auto");
-    if (autoAhead) {
+      .filter((track) => track.origin === "auto").length;
+    if (autoAhead >= RECOMMENDATION_BUFFER_SIZE) {
       return;
     }
 

@@ -81,13 +81,13 @@ Funkcionalnosti 1–7 so MVP; zgodbam `US-01`–`US-12` sledijo zgodbe za funkci
 
 - **Funkcionalnost:** F4 – Samodejni uvoz ob manjkajočem zadetku
 - **Vloga:** Poslušalec
-- **Uporabniška zgodba:** Kot poslušalec želim, da mi iskanje brez zadetkov ponudi pridobitev skladbe in pokaže stanje opravila, da vem, kdaj bo skladba na voljo.
+- **Uporabniška zgodba:** Kot poslušalec želim, da mi iskanje brez zadetkov ponudi zunanje izdaje in pokaže stanje opravila, da vem, kdaj bo skladba na voljo.
 - **Merila sprejemljivosti:**
-  1. Možnost pridobitve se pokaže samo, kadar je skrbnik vklopil samodejni uvoz; sicer se pokaže samo sporočilo, da skladbe ni v knjižnici.
-  2. Po sprožitvi se prikaže stanje opravila (`queued`, `searching`, `downloading`, `processing`) in se posodablja brez ponovnega nalaganja strani.
-  3. Za enako poizvedbo se ponovno uporabi obstoječe aktivno opravilo; novih podvojenih opravil ni.
-  4. Ko je opravilo uspešno zaključeno, enako iskanje najde skladbo in jo je mogoče predvajati.
-  5. Če opravilo neuspe, se prikaže sporočilo o neuspehu in uporabnik lahko poizkus ponovi.
+  1. Ko je samodejni uvoz vklopljen, iskanje prikaže zunanje izdaje z YouTuba pod lokalnimi zadetki oziroma namesto njih; vsaka izdaja ima sličico, naslov, izvajalca, trajanje in število ogledov. Če uvoz ni vklopljen, se prikaže samo sporočilo, da skladbe ni v knjižnici.
+  2. Uporabnik izbere točno izdajo z **Play** (predvajalnik se odpre pri 0:00 in počaka na prenos) ali **+ Queue** (prenos v ozadju brez prekinitve predvajanja); predolge izdaje in izdaje z neznanim trajanjem so onemogočene.
+  3. Po sprožitvi se prikaže stanje opravila (`queued`, `searching`, `downloading`, `processing`, `needs_review`) in se posodablja brez ponovnega nalaganja strani.
+  4. Za enako poizvedbo se ponovno uporabi obstoječe aktivno opravilo; novih podvojenih opravil ni.
+  5. Ko je opravilo uspešno zaključeno, enako iskanje najde skladbo in jo je mogoče predvajati. Če opravilo neuspe, se prikaže sporočilo o neuspehu in uporabnik lahko poizkus ponovi.
 
 ### US-07: Pregled dvoumnih uvozov
 
@@ -101,17 +101,20 @@ Funkcionalnosti 1–7 so MVP; zgodbam `US-01`–`US-12` sledijo zgodbe za funkci
   4. Po potrditvi se skladba prenese in doda v katalog; po zavrnitvi opravilo ne prenese ničesar in se zaključi kot preklicano.
   5. Poslušalec pri dostopu do pregleda uvozov dobi zavrnitev dostopa.
 
+Opomba: deterministični razvrščevalnik lahko jasnega kandidata sprejme samodejno; če je vklopljeno `llm_auto_approve` oziroma je za opravilo vsiljeno, lahko nejasnega potrdi model Laya prek Ollame. Če model ni dosegljiv, opravilo ostane v stanju `needs_review`.
+
 ### US-08: Nastavitve samodejnega uvoza
 
 - **Funkcionalnost:** F4 – Samodejni uvoz ob manjkajočem zadetku
 - **Vloga:** Skrbnik sistema
-- **Uporabniška zgodba:** Kot skrbnik želim samodejni uvoz vklopiti ali izklopiti ter določiti največjo dolžino skladbe, da nadzorujem, kaj se prenese v knjižnico.
+- **Uporabniška zgodba:** Kot skrbnik želim vklopiti ali izklopiti samodejni uvoz, določiti največjo dolžino skladbe in vklopiti samodejno potrjevanje z modelom Laya, da nadzorujem, kaj se prenese v knjižnico.
 - **Merila sprejemljivosti:**
-  1. Nastavitev samodejnega uvoza je privzeto izklopljena.
+  1. Samodejni uvoz je privzeto izklopljen, samodejno potrjevanje z modelom Laya prav tako, največja dolžina pa je privzeto 15 minut.
   2. Sprememba nastavitve velja za vsa nova opravila; že zagnana opravila se ne prekličejo.
   3. Vnos največje dolžine se preveri; neveljavna vrednost (npr. besedilo ali negativno število) se zavre s sporočilom.
   4. Kandidati, ki presegajo dovoljeno največjo dolžino, se izločijo, preden se prenos začne.
-  5. Poslušalec in urednik ne moreta spremeniti te nastavitve; zahteve brez skrbniške vloge vrnejo napako.
+  5. Poslušalec in urednik ne moreta spremeniti teh nastavitev; zahteve brez skrbniške vloge vrnejo napako.
+  6. Ko je `llm_auto_approve` vklopljen, lahko delavec nejasnega kandidata pošlje modelu Laya in ga potrdi brez ročnega pregleda; ob nedosegljivem modelu opravilo ostane v stanju `needs_review`.
 
 ### US-09: Predvajanje in čakalna vrsta
 
@@ -152,13 +155,14 @@ Funkcionalnosti 1–7 so MVP; zgodbam `US-01`–`US-12` sledijo zgodbe za funkci
 
 - **Funkcionalnost:** F7 – Seznam »Odkrij podobno«
 - **Vloga:** Poslušalec
-- **Uporabniška zgodba:** Kot poslušalec želim izbrati do tri skladbe iz knjižnice in dobiti seznam podobnih skladb, ki so že v knjižnici, da odkrijem glasbo, ki jo lahko takoj poslušam.
+- **Uporabniška zgodba:** Kot poslušalec želim izbrati do tri skladbe iz knjižnice in dobiti seznam podobnih lokalnih in zunanjih skladb, ki jih lahko takoj predvajam ali prenesem, da odkrijem glasbo.
 - **Merila sprejemljivosti:**
   1. Izbira izhodišč je omejena na eno do tri skladbe; vmesnik ne dovoli četrte.
-  2. Rezultat vsebuje največ 20 skladb in vse so v lokalni knjižnici.
+  2. Rezultat vsebuje največ 20 skladb; lokalne so označene in takoj predvajljive, zunanje pa so označene in jih je mogoče prenesti ter dodati v čakalno vrsto.
   3. Izhodiščne skladbe in podvojeni zadetki se v rezultatu ne ponovijo.
-  4. Predlog je mogoče shrani kot nov osebni seznam predvajanja.
-  5. Če ustreznih skladb v knjižnici ni, se prikaže prazno stanje z usmeritvijo na iskanje; priporočilo ne sproži prenosa.
+  4. Predlog je mogoče shraniti kot nov osebni seznam predvajanja; pri tem se vse manjkajoče zunanje skladbe prenesejo in dodajo v seznam.
+  5. Če ustreznih skladb ni, se prikaže prazno stanje z usmeritvijo na iskanje; samo priporočilo ne sproži prenosa, ta se začne šele z uporabnikovo izbiro.
+  6. Če Last.fm ni dosegljiv ali ključ ni nastavljen, predvajanje, iskanje in seznami delujejo naprej.
 
 ## Uporabniške zgodbe za funkcionalnosti po MVP-ju
 

@@ -1,6 +1,6 @@
 # 0004. Last.fm samo za metapodatke priporočil
 
-- Status: sprejeto
+- Status: delno nadomeščen z [0010](0010-zunanje-skladbe-v-priporocilih.md)
 - Datum: 2026-10-27
 - Nadomešča: /
 - Odločitev sprejeli: projektna ekipa
@@ -24,3 +24,5 @@ Izbrana možnost: **Last.fm samo za metapodatke o podobnih skladbah**, ker metod
 
 - **Pozitivne:** priporočila so takoj uporabna, ker so omejena na lokalno knjižnico; izpad Last.fm ne ustavi predvajanja, iskanja ali seznamov; integracija je majhna in razumljiva; ni dodatnega modela ali učenja.
 - **Negativne:** odvisnost od zunanje storitve, njenih omejitev števila klicev in kakovosti podatkov; manjše pokritje manj znanih izvajalcev; priporočila niso osebno prilagojena; ob nedosegljivosti je funkcija začasno okrnjena.
+
+> Dopolnitev (2026-11-09): omejitev priporočil na lokalno knjižnico je delno odpravljena z [ADR 0010](0010-zunanje-skladbe-v-priporocilih.md). Last.fm ostaja samo vir metapodatkov, zunanje predloge pa se prenesejo šele na uporabnikovo zahtevo.

@@ -8,7 +8,7 @@
 
 Soundroom je namenjen posamezniku ali gospodinjstvu, ki želi do svoje glasbene zbirke dostopati z računalnika ali telefona. Rešuje problem razpršene osebne zbirke, ki je shranjena na različnih napravah: aplikacija uporabnikom omogoča dostop do skupnega kataloga in varno pretaka skladbe prijavljenim uporabnikom.
 
-Aplikacija je namenjena poslušanju glasbe, ki je v osebni knjižnici. Razpoložljivost skladb je odvisna od datotek, ki jih skrbnik naloži ali jih aplikacija uvozi na zahtevo. Priporočila temeljijo na podatkih o podobnosti skladb iz Last.fm, vendar so omejena na skladbe, ki so že na voljo v knjižnici Soundroom.
+Aplikacija je namenjena poslušanju glasbe, ki je v osebni knjižnici. Razpoložljivost skladb je odvisna od datotek, ki jih skrbnik naloži ali jih aplikacija uvozi na zahtevo. Priporočila temeljijo na podatkih o podobnosti skladb iz Last.fm. Predlogi vključujejo skladbe, ki so že v knjižnici Soundroom, in zunanje skladbe; zunanje se prenesejo šele, ko jih uporabnik izbere za predvajanje ali dodajanje v čakalno vrsto.
 
 ## Ciljni uporabniki
 
@@ -22,9 +22,9 @@ Vsi uporabniki dostopajo do istega glasbenega kataloga, osebni seznami predvajan
 
 Skrbnik v aplikaciji ustvari račune in lahko naloži obstoječe datoteke MP3. Poslušalec se prijavi v odzivno spletno aplikacijo, ki knjižnico in uporabniške sezname pridobiva iz zalednega sistema.
 
-Ko poslušalec išče skladbo, sistem najprej išče po lokalnem katalogu. Če je najde, lahko takoj odpre predvajalnik ali jo doda na seznam. Če je ne najde in je skrbnik vklopil nastavitev **Samodejno pridobi ob neuspešnem iskanju**, zaledni sistem ustvari opravilo. Ločen delovni proces išče primeren zadetek z `yt-dlp`, iz zvoka z orodjem FFmpeg pripravi MP3 in posodobi katalog. Uporabnik vidi stanje opravila; če je zadetek dvoumen, ga mora pred objavo potrditi skrbnik. Tako se iskanje ne blokira med prenosom, podvojena opravila pa je mogoče združiti.
+Ko poslušalec išče skladbo, sistem najprej išče po lokalnem katalogu. Če je najde, lahko takoj odpre predvajalnik ali jo doda na seznam. Če je vklopljena nastavitev **Samodejno pridobi ob neuspešnem iskanju**, iskanje pod lokalnimi zadetki oziroma namesto njih prikaže tudi zunanje izdaje z YouTuba; uporabnik izbere točno izdajo z **Play** ali **+ Queue**, zaledni sistem pa ustvari opravilo. Ločen delovni proces prenese izbrano izdajo z `yt-dlp`, iz zvoka z orodjem FFmpeg pripravi MP3 in posodobi katalog; če izdaja ni bila izbrana, najprej poišče kandidate. Uporabnik vidi stanje opravila; dvoumen zadetek pred objavo potrdi urednik ali skrbnik. Če je vklopljeno samodejno potrjevanje z lokalnim modelom Laya, lahko sistem jasnega oziroma dovolj verjetnega kandidata potrdi tudi brez ročnega pregleda. Tako se iskanje ne blokira med prenosom, podvojena opravila pa je mogoče združiti.
 
-Poslušalec lahko izbere eno ali več skladb iz knjižnice kot izhodišče za **Odkrij podobno**. Zaledni sistem prek Last.fm pridobi predloge podobnih skladb, jih poišče v lokalnem katalogu in iz najdenih skladb sestavi predlog seznama. Last.fm v aplikacijo ne prenaša zvočnih datotek in ni storitev za predvajanje.
+Poslušalec lahko izbere eno ali več skladb iz knjižnice kot izhodišče za **Odkrij podobno**. Zaledni sistem prek Last.fm pridobi predloge podobnih skladb ter jih poveže z lokalnim katalogom; predlogi vključujejo lokalne in zunanje skladbe. Zunanje skladbe se prenesejo šele na uporabnikovo zahtevo (prenos v čakalno vrsto ali shranjevanje predloga kot seznama). Last.fm v aplikacijo ne prenaša zvočnih datotek in ni storitev za predvajanje.
 
 Predvajalnik predvaja zvok, ki ga zaledni sistem pretaka prijavljenemu uporabniku. V telefonu je spletno aplikacijo mogoče namestiti na začetni zaslon kot PWA. To samo po sebi **ne omogoča Android Auto**; podpora za Android Auto je možna v poznejši fazi z dodatno izvorno Android aplikacijo, ki uporablja isti zaledni sistem.
 

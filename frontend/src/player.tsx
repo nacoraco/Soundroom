@@ -28,10 +28,13 @@ import {
   RECOMMENDATION_BATCH_SIZE,
   RECOMMENDATION_BUFFER_SIZE,
   addRecommendationHistoryEntry,
+  addRecommendationRejection,
   createRecommendationHistoryEntry,
+  recommendationKey,
   removeRecommendationHistoryTrack,
   replaceRecommendationHistoryTrack,
   selectRecommendationSeeds,
+  shouldRejectSkippedTrack,
   updateRecommendationProgress,
   type RecommendationHistoryEntry,
   type RecommendationSeed,
@@ -102,6 +105,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const recommendationOrderRef = useRef(0);
   const lastActiveTrackIdRef = useRef<string | null>(null);
   const failedRecommendationKeysRef = useRef<RecommendationSeed[]>([]);
+  const rejectedRecommendationKeysRef = useRef<RecommendationSeed[]>([]);
   const stateRef = useRef(state);
   stateRef.current = state;
   const queryClient = useQueryClient();
@@ -191,6 +195,18 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       pendingId,
     );
     dispatch({ type: "remove", index });
+  }, []);
+
+  const rejectTrack = useCallback((track: PlayerTrack) => {
+    const title = track.title.trim();
+    const artist = track.artist_name.trim();
+    if (!title || !artist) {
+      return;
+    }
+    rejectedRecommendationKeysRef.current = addRecommendationRejection(
+      rejectedRecommendationKeysRef.current,
+      { title, artist },
+    );
   }, []);
 
   const currentTrack = state.queue[state.currentIndex] ?? null;
@@ -409,10 +425,21 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
             title: track.title,
             artist: track.artist_name,
           }));
+        const seenExclude = new Set<string>();
         const exclude = [
+          ...rejectedRecommendationKeysRef.current,
           ...failedRecommendationKeysRef.current,
           ...queueExclude,
-        ].slice(0, 50);
+        ]
+          .filter((item) => {
+            const key = recommendationKey(item.title, item.artist);
+            if (seenExclude.has(key)) {
+              return false;
+            }
+            seenExclude.add(key);
+            return true;
+          })
+          .slice(0, 50);
         const result = await discoverRadio(seeds, {
           limit: RECOMMENDATION_BATCH_SIZE,
           exclude,
@@ -435,7 +462,26 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
               `${track.title.trim().toLowerCase()}|${track.artist_name.trim().toLowerCase()}`,
           ),
         );
+        const rejectedKeys = new Set(
+          rejectedRecommendationKeysRef.current.map((item) =>
+            recommendationKey(item.title, item.artist),
+          ),
+        );
         const recommendation = result.recommendations.find((item) => {
+          if (rejectedKeys.has(recommendationKey(item.title, item.artist))) {
+            return false;
+          }
+          if (
+            item.local_track &&
+            rejectedKeys.has(
+              recommendationKey(
+                item.local_track.title,
+                item.local_track.artist_name,
+              ),
+            )
+          ) {
+            return false;
+          }
           if (item.local_track) {
             return !existingIds.has(item.local_track.id);
           }
@@ -759,6 +805,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       return;
     }
     captureCurrentProgress();
+    if (
+      current &&
+      shouldRejectSkippedTrack(current, recommendationHistoryRef.current)
+    ) {
+      rejectTrack(current);
+    }
     const failedAheadIndex = snapshot.queue.findIndex(
       (track, index) =>
         index > snapshot.currentIndex &&
@@ -773,7 +825,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       return;
     }
     dispatch({ type: "next" });
-  }, [captureCurrentProgress, removeFailedRecommendation]);
+  }, [captureCurrentProgress, rejectTrack, removeFailedRecommendation]);
 
   const seek = useCallback((time: number) => {
     const audio = audioRef.current;
@@ -808,9 +860,15 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         return;
       }
       captureCurrentProgress();
+      if (
+        track &&
+        shouldRejectSkippedTrack(track, recommendationHistoryRef.current)
+      ) {
+        rejectTrack(track);
+      }
       dispatch({ type: "remove", index });
     },
-    [captureCurrentProgress, removeFailedRecommendation],
+    [captureCurrentProgress, rejectTrack, removeFailedRecommendation],
   );
 
   const removeTrack = useCallback(
@@ -823,10 +881,18 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
           return;
         }
         captureCurrentProgress();
+        if (shouldRejectSkippedTrack(track, recommendationHistoryRef.current)) {
+          rejectTrack(track);
+        }
         dispatch({ type: "remove", index });
       }
     },
-    [captureCurrentProgress, removeFailedRecommendation, state.queue],
+    [
+      captureCurrentProgress,
+      rejectTrack,
+      removeFailedRecommendation,
+      state.queue,
+    ],
   );
 
   const clearQueue = useCallback(() => {

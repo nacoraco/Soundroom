@@ -441,6 +441,42 @@ def test_radio_endpoint_excludes_tracks_already_in_the_queue(client: TestClient)
     ]
 
 
+def test_radio_endpoint_excludes_rejected_tracks_with_video_suffixes(
+    client: TestClient,
+):
+    headers = admin_headers(client)
+    fake = FakeLastfm(
+        {
+            ("Seed Artist", "Seed Song"): [
+                SimilarTrack("Rejected Song", "Rejected Artist", 0.9),
+                SimilarTrack("Fresh Song", "Fresh Artist", 0.8),
+            ]
+        }
+    )
+    override_lastfm(client, fake)
+    try:
+        response = client.post(
+            "/api/discover/radio",
+            json={
+                "seeds": [{"title": "Seed Song", "artist": "Seed Artist"}],
+                "exclude": [
+                    {
+                        "title": "Rejected Artist - Rejected Song (Official Video)",
+                        "artist": "Rejected Artist",
+                    }
+                ],
+            },
+            headers=headers,
+        )
+    finally:
+        clear_override(client)
+
+    assert response.status_code == 200
+    assert [item["title"] for item in response.json()["recommendations"]] == [
+        "Fresh Song"
+    ]
+
+
 def test_radio_rejects_more_than_ten_seeds(client: TestClient):
     headers = admin_headers(client)
     override_lastfm(client, FakeLastfm({}))

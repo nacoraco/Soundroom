@@ -1,10 +1,10 @@
 import type { PlayerTrack } from "./playerState";
 
-export const MAX_RECOMMENDATION_HISTORY = 10;
+export const MAX_RECOMMENDATION_HISTORY = 100;
 export const RECOMMENDATION_COMPLETION_THRESHOLD = 0.5;
 export const RECOMMENDATION_BATCH_SIZE = 1;
 export const RECOMMENDATION_BUFFER_SIZE = 2;
-export const MAX_RECOMMENDATION_SEEDS = MAX_RECOMMENDATION_HISTORY;
+export const MAX_RECOMMENDATION_SEEDS = 10;
 export const MAX_RECOMMENDATION_REJECTIONS = 100;
 const TRAILING_BRACKETS = /\s*[([][^)\]]*[)\]]\s*$/;
 
@@ -236,7 +236,8 @@ export function selectRecommendationSeeds(
 
   const seen = new Set<string>();
   const seeds: RecommendationSeed[] = [];
-  for (const seed of source) {
+  for (let index = source.length - 1; index >= 0; index -= 1) {
+    const seed = source[index];
     const title = seed.title.trim();
     const artist = seed.artist.trim();
     if (!title || !artist) {
@@ -252,5 +253,5 @@ export function selectRecommendationSeeds(
       break;
     }
   }
-  return seeds;
+  return seeds.reverse();
 }

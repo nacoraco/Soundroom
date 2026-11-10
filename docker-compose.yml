@@ -1,6 +1,7 @@
 services:
   db:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-soundroom}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-soundroom}
@@ -19,6 +20,7 @@ services:
 
   backend:
     build: ./backend
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-soundroom}:${POSTGRES_PASSWORD:-soundroom}@db:5432/${POSTGRES_DB:-soundroom}
       APP_SECRET_KEY: ${APP_SECRET_KEY:-dev-secret-change-me}
@@ -57,6 +59,7 @@ services:
 
   worker:
     build: ./backend
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-soundroom}:${POSTGRES_PASSWORD:-soundroom}@db:5432/${POSTGRES_DB:-soundroom}
       MEDIA_STORAGE_PATH: /data/audio
@@ -76,6 +79,7 @@ services:
 
   frontend:
     build: ./frontend
+    restart: unless-stopped
     environment:
       VITE_PROXY_TARGET: http://backend:8000
       VITE_ALLOWED_HOSTS: ${VITE_ALLOWED_HOSTS:-}

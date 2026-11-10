@@ -45,3 +45,17 @@ data/
 *.ogg
 *.sqlite3
 *.db
+
+# Android / Capacitor generated files
+frontend/android/.gradle/
+frontend/android/build/
+frontend/android/app/build/
+frontend/android/local.properties
+frontend/android/capacitor-cordova-android-plugins/
+frontend/android/.kotlin/
+frontend/android/.cxx/
+frontend/android/.externalNativeBuild/
+frontend/android/app/src/main/assets/public/
+frontend/android/app/src/main/assets/capacitor.config.json
+frontend/android/app/src/main/assets/capacitor.plugins.json
+frontend/android/app/src/main/res/xml/config.xml

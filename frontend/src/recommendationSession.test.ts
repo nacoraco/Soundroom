@@ -4,6 +4,7 @@ import type { PlayerTrack } from "./playerState";
 import {
   MAX_RECOMMENDATION_HISTORY,
   MAX_RECOMMENDATION_REJECTIONS,
+  MAX_RECOMMENDATION_SEEDS,
   addRecommendationHistoryEntry,
   addRecommendationRejection,
   cleanRecommendationMetadata,
@@ -149,6 +150,48 @@ describe("recommendation seed selection", () => {
     ]);
   });
 
+  it("uses only the ten most recent listened tracks as seeds", () => {
+    const history = Array.from(
+      { length: MAX_RECOMMENDATION_SEEDS + 2 },
+      (_, index) => entry(track(`track-${index}`, `Track ${index}`), 200),
+    );
+
+    expect(selectRecommendationSeeds(history, original)).toEqual(
+      history.slice(-MAX_RECOMMENDATION_SEEDS).map((item) => ({
+        title: item.track.title,
+        artist: item.track.artist_name,
+      })),
+    );
+  });
+
+  it("keeps ten listened seeds after many skipped tracks", () => {
+    let history: RecommendationHistoryEntry[] = [];
+    for (let index = 0; index < MAX_RECOMMENDATION_SEEDS; index += 1) {
+      history = addRecommendationHistoryEntry(
+        history,
+        entry(track(`listened-${index}`, `Listened ${index}`), 200),
+      );
+    }
+    for (
+      let index = 0;
+      index < MAX_RECOMMENDATION_HISTORY - MAX_RECOMMENDATION_SEEDS;
+      index += 1
+    ) {
+      history = addRecommendationHistoryEntry(
+        history,
+        entry(track(`skipped-${index}`, `Skipped ${index}`), 10),
+      );
+    }
+
+    expect(history).toHaveLength(MAX_RECOMMENDATION_HISTORY);
+    expect(selectRecommendationSeeds(history, original)).toEqual(
+      Array.from({ length: MAX_RECOMMENDATION_SEEDS }, (_, index) => ({
+        title: `Listened ${index}`,
+        artist: "Test Artist",
+      })),
+    );
+  });
+
   it("excludes tracks played for exactly fifty percent", () => {
     const history = [entry(track("song-1", "Song 1"), 100)];
 
@@ -191,7 +234,7 @@ describe("recommendation seed selection", () => {
     ];
 
     expect(selectRecommendationSeeds(history, original)).toEqual([
-      { title: "Same Song", artist: "Same Artist" },
+      { title: "same song", artist: "same artist" },
     ]);
   });
 

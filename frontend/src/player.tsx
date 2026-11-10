@@ -19,6 +19,11 @@ import {
 } from "./api";
 import { ACTIVE_IMPORT_STATUSES } from "./importStatus";
 import {
+  addNativeMediaSessionListener,
+  clearNativeMediaSession,
+  updateNativeMediaSession,
+} from "./nativeMediaSession";
+import {
   initialPlayerState,
   playerReducer,
   type PlayerState,
@@ -101,6 +106,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const userPausedRef = useRef(false);
   const interruptedRef = useRef(false);
   const lastPlayTokenRef = useRef(state.playToken);
+  const lastNativePositionUpdateRef = useRef(0);
   const importRequestRef = useRef(0);
   const aliveRef = useRef(true);
   const recommendationEnabledRef = useRef(false);
@@ -1236,6 +1242,96 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       // Some browsers reject position updates before metadata is ready.
     }
   }, [currentTrack, state.currentTime, state.duration]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let handle: { remove: () => Promise<void> } | null = null;
+
+    void addNativeMediaSessionListener(({ action }) => {
+      if (action === "play") {
+        const audio = audioRef.current;
+        userPausedRef.current = false;
+        interruptedRef.current = false;
+        if (audio && audio.src) {
+          requestPlay(audio);
+        }
+        dispatch({ type: "setPlaying", playing: true });
+      } else if (action === "pause") {
+        userPausedRef.current = true;
+        interruptedRef.current = false;
+        audioRef.current?.pause();
+        dispatch({ type: "setPlaying", playing: false });
+      } else if (action === "next") {
+        next();
+      } else if (action === "previous") {
+        previous();
+      } else if (action.startsWith("seek:")) {
+        const milliseconds = Number(action.slice("seek:".length));
+        if (Number.isFinite(milliseconds)) {
+          seek(milliseconds / 1000);
+        }
+      }
+    }).then((result) => {
+      if (cancelled) {
+        void result?.remove();
+        return;
+      }
+      handle = result;
+    });
+
+    return () => {
+      cancelled = true;
+      void handle?.remove();
+    };
+  }, [next, previous, requestPlay, seek]);
+
+  useEffect(() => {
+    if (!currentTrack || currentTrack.pending) {
+      clearNativeMediaSession();
+      return;
+    }
+    const duration =
+      state.duration > 0 ? state.duration : currentTrack.duration_seconds;
+    updateNativeMediaSession({
+      title: currentTrack.title,
+      artist: currentTrack.artist_name,
+      album: currentTrack.album_title ?? "Soundroom",
+      duration: Number.isFinite(duration) ? duration : 0,
+      isPlaying: state.isPlaying,
+      position: Math.max(state.currentTime, 0),
+    });
+  }, [currentTrack, state.duration, state.isPlaying]);
+
+  useEffect(() => {
+    if (
+      !currentTrack ||
+      currentTrack.pending ||
+      !state.isPlaying ||
+      state.currentTime <= 0
+    ) {
+      return;
+    }
+    const now = Date.now();
+    if (now - lastNativePositionUpdateRef.current < 5000) {
+      return;
+    }
+    lastNativePositionUpdateRef.current = now;
+    const duration =
+      state.duration > 0 ? state.duration : currentTrack.duration_seconds;
+    updateNativeMediaSession({
+      title: currentTrack.title,
+      artist: currentTrack.artist_name,
+      album: currentTrack.album_title ?? "Soundroom",
+      duration: Number.isFinite(duration) ? duration : 0,
+      isPlaying: state.isPlaying,
+      position: Math.max(state.currentTime, 0),
+    });
+  }, [
+    currentTrack,
+    state.currentTime,
+    state.duration,
+    state.isPlaying,
+  ]);
 
   useEffect(() => {
     if (!currentTrack) {

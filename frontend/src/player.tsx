@@ -118,6 +118,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  useEffect(() => {
+    dispatch({ type: "dedupeAuto" });
+  }, [state.queue]);
+
   const resetRecommendationSession = useCallback(
     (track: PlayerTrack | null) => {
       recommendationRequestRef.current += 1;

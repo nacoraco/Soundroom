@@ -1420,7 +1420,20 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
           switchingSourceRef.current = false;
         }}
         onPause={() => {
-          if (switchingSourceRef.current) {
+          const audio = audioRef.current;
+          if (!audio || switchingSourceRef.current || audio.ended) {
+            return;
+          }
+          if (
+            audio.readyState < HTMLMediaElement.HAVE_CURRENT_DATA ||
+            audio.currentTime <= 0.05
+          ) {
+            return;
+          }
+          if (
+            Number.isFinite(audio.duration) &&
+            audio.currentTime >= audio.duration - 0.5
+          ) {
             return;
           }
           const wasPlaying = stateRef.current.isPlaying;

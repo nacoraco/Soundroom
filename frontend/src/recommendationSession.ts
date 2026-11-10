@@ -5,6 +5,9 @@ export const RECOMMENDATION_COMPLETION_THRESHOLD = 0.5;
 export const RECOMMENDATION_BATCH_SIZE = 1;
 export const RECOMMENDATION_BUFFER_SIZE = 2;
 export const MAX_RECOMMENDATION_SEEDS = 10;
+export const RECENT_RECOMMENDATION_SEEDS = 5;
+export const RANDOM_QUALIFYING_SEEDS = 4;
+export const RANDOM_UNQUALIFIED_SEEDS = 1;
 export const MAX_RECOMMENDATION_REJECTIONS = 100;
 export const MAX_RECOMMENDATION_EXCLUDE = 200;
 const VERSION_MARKERS = new Set([
@@ -203,6 +206,11 @@ function isDescriptorContent(value: string): boolean {
   return tokens.some((token) => DEDUPE_WORDS.has(token));
 }
 
+function startsWithDescriptor(value: string): boolean {
+  const tokens = normalizeRecommendationText(value).split(" ").filter(Boolean);
+  return tokens.length > 0 && DEDUPE_WORDS.has(tokens[0]);
+}
+
 function removeDescriptorBrackets(value: string): string {
   return value.replace(BRACKET_GROUP, (match) => {
     const content = match.slice(1, -1);
@@ -220,7 +228,7 @@ function stripTrailingDescriptors(value: string): string {
     if (separatorIndex !== -1) {
       const prefix = result.slice(0, separatorIndex).trim();
       const suffix = result.slice(separatorIndex + 3).trim();
-      if (prefix && suffix && isDescriptorContent(suffix)) {
+      if (prefix && suffix && startsWithDescriptor(suffix)) {
         result = prefix;
         continue;
       }
@@ -321,7 +329,7 @@ export function cleanRecommendationMetadata(
 
 export function recommendationKey(title: string, artist: string): string {
   const metadata = cleanIdentityMetadata(artist, title);
-  return `${normalizeRecommendationText(metadata.title)}|${normalizeRecommendationText(
+  return `${compactMetadata(metadata.title)}|${compactMetadata(
     metadata.artist,
   )}`;
 }
@@ -357,45 +365,130 @@ export function shouldRejectSkippedTrack(
   );
 }
 
+function pickRandomSeeds<T>(
+  items: T[],
+  count: number,
+  random: () => number,
+): T[] {
+  const pool = [...items];
+  const picked: T[] = [];
+  while (picked.length < count && pool.length > 0) {
+    const value = random();
+    const bounded = Number.isFinite(value)
+      ? Math.min(Math.max(value, 0), 0.999999)
+      : 0;
+    const index = Math.floor(bounded * pool.length);
+    const [item] = pool.splice(index, 1);
+    if (item !== undefined) {
+      picked.push(item);
+    }
+  }
+  return picked;
+}
+
 export function selectRecommendationSeeds(
   history: RecommendationHistoryEntry[],
   originalSong: RecommendationSeed | null,
+  random: () => number = Math.random,
 ): RecommendationSeed[] {
-  const qualifying = history.filter(
-    (entry) =>
-      !entry.track.pending &&
-      entry.durationSeconds > 0 &&
-      recommendationCompletion(entry) > RECOMMENDATION_COMPLETION_THRESHOLD,
-  );
+  const qualifying: { seed: RecommendationSeed; index: number }[] = [];
+  const seenQualifying = new Set<string>();
 
-  const source: RecommendationSeed[] =
-    qualifying.length > 0
-      ? qualifying.map((entry) => ({
-          title: entry.track.title,
-          artist: entry.track.artist_name,
-        }))
-      : originalSong
-        ? [originalSong]
-        : [];
-
-  const seen = new Set<string>();
-  const seeds: RecommendationSeed[] = [];
-  for (let index = source.length - 1; index >= 0; index -= 1) {
-    const seed = source[index];
-    const title = seed.title.trim();
-    const artist = seed.artist.trim();
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const entry = history[index];
+    if (entry.track.pending || entry.durationSeconds <= 0) {
+      continue;
+    }
+    if (
+      recommendationCompletion(entry) <=
+      RECOMMENDATION_COMPLETION_THRESHOLD
+    ) {
+      continue;
+    }
+    const title = entry.track.title.trim();
+    const artist = entry.track.artist_name.trim();
     if (!title || !artist) {
       continue;
     }
     const key = recommendationKey(title, artist);
-    if (seen.has(key)) {
+    if (seenQualifying.has(key)) {
       continue;
     }
-    seen.add(key);
-    seeds.push({ title, artist });
-    if (seeds.length >= MAX_RECOMMENDATION_SEEDS) {
-      break;
-    }
+    seenQualifying.add(key);
+    qualifying.push({ seed: { title, artist }, index });
   }
-  return seeds.reverse();
+
+  if (qualifying.length === 0) {
+    const title = originalSong?.title.trim() ?? "";
+    const artist = originalSong?.artist.trim() ?? "";
+    return title && artist ? [{ title, artist }] : [];
+  }
+
+  const unqualified: { seed: RecommendationSeed; index: number }[] = [];
+  const seenUnqualified = new Set<string>();
+
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const entry = history[index];
+    if (entry.track.pending || entry.durationSeconds <= 0) {
+      continue;
+    }
+    if (
+      recommendationCompletion(entry) >
+      RECOMMENDATION_COMPLETION_THRESHOLD
+    ) {
+      continue;
+    }
+    const title = entry.track.title.trim();
+    const artist = entry.track.artist_name.trim();
+    if (!title || !artist) {
+      continue;
+    }
+    const key = recommendationKey(title, artist);
+    if (seenQualifying.has(key) || seenUnqualified.has(key)) {
+      continue;
+    }
+    seenUnqualified.add(key);
+    unqualified.push({ seed: { title, artist }, index });
+  }
+
+  const recent = qualifying.slice(0, RECENT_RECOMMENDATION_SEEDS);
+  const older = qualifying.slice(RECENT_RECOMMENDATION_SEEDS);
+  const qualifyingPicks = pickRandomSeeds(
+    older,
+    RANDOM_QUALIFYING_SEEDS,
+    random,
+  );
+  const unqualifiedPicks = pickRandomSeeds(
+    unqualified,
+    RANDOM_UNQUALIFIED_SEEDS,
+    random,
+  );
+
+  const selected = [...recent, ...qualifyingPicks, ...unqualifiedPicks];
+  const selectedKeys = new Set(
+    selected.map((item) =>
+      recommendationKey(item.seed.title, item.seed.artist),
+    ),
+  );
+  const remaining = older.filter(
+    (item) =>
+      !selectedKeys.has(
+        recommendationKey(item.seed.title, item.seed.artist),
+      ),
+  );
+  const fill = pickRandomSeeds(
+    remaining,
+    Math.max(
+      0,
+      MAX_RECOMMENDATION_SEEDS -
+        recent.length -
+        qualifyingPicks.length -
+        unqualifiedPicks.length,
+    ),
+    random,
+  );
+
+  return [...selected, ...fill]
+    .sort((left, right) => left.index - right.index)
+    .map((item) => item.seed);
 }

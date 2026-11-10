@@ -30,6 +30,7 @@ export type PlayerAction =
   | { type: "playAt"; index: number }
   | { type: "enqueue"; track: PlayerTrack }
   | { type: "appendAuto"; tracks: PlayerTrack[] }
+  | { type: "dedupeAuto" }
   | { type: "replaceUpcomingAuto"; tracks: PlayerTrack[] }
   | { type: "replacePending"; pendingId: string; track: Track }
   | { type: "setPendingJob"; pendingId: string; jobId: string; status: ImportJobStatus }
@@ -211,6 +212,25 @@ export function playerReducer(
         ...state,
         queue: [...state.queue, ...tracks],
       };
+    }
+
+    case "dedupeAuto": {
+      const seen = new Set<string>();
+      let changed = false;
+      const queue = state.queue.filter((track, index) => {
+        const key = recommendationKey(track.title, track.artist_name);
+        if (index <= state.currentIndex) {
+          seen.add(key);
+          return true;
+        }
+        if (track.origin === "auto" && seen.has(key)) {
+          changed = true;
+          return false;
+        }
+        seen.add(key);
+        return true;
+      });
+      return changed ? { ...state, queue } : state;
     }
 
     case "replaceUpcomingAuto": {

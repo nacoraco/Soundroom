@@ -212,6 +212,13 @@ def test_song_identity_collapses_video_and_version_variants():
         "Artist",
         "Song",
     )
+    assert song_identity(
+        "thirdeyeblind",
+        "Semi-Charmed Life (2006 Remaster)",
+    ) == song_identity(
+        "Third Eye Blind",
+        "Third Eye Blind - Semi-Charmed Life / Lyrics",
+    )
 
 
 def test_local_matching_handles_import_suffixes_and_artists():
@@ -244,6 +251,18 @@ def make_memory_track(title: str, artist_name: str = "Artist") -> Track:
         id=uuid4(),
         title=title,
         artist=Artist(name=artist_name, normalized_name=normalize_text(artist_name)),
+    )
+
+
+def test_local_matching_ignores_artist_spacing():
+    tracks = [make_memory_track("Semi-Charmed Life", "Third Eye Blind")]
+
+    assert (
+        match_local_track(
+            SimilarTrack("Semi-Charmed Life", "thirdeyeblind", 0.9),
+            tracks,
+        )
+        is tracks[0]
     )
 
 
@@ -614,6 +633,55 @@ def test_radio_endpoint_excludes_listened_variants(client: TestClient):
                         ),
                         "artist": "Lexi Jayde",
                     }
+                ],
+            },
+            headers=headers,
+        )
+    finally:
+        clear_override(client)
+
+    assert response.status_code == 200
+    assert [item["title"] for item in response.json()["recommendations"]] == [
+        "Fresh Song"
+    ]
+
+
+def test_radio_endpoint_excludes_artist_spacing_variants(client: TestClient):
+    headers = admin_headers(client)
+    fake = FakeLastfm(
+        {
+            ("Blind Melon", "No Rain"): [
+                SimilarTrack(
+                    "Semi-Charmed Life",
+                    "Third Eye Blind",
+                    0.9,
+                ),
+                SimilarTrack("Fresh Song", "Fresh Artist", 0.8),
+            ]
+        }
+    )
+    override_lastfm(client, fake)
+    try:
+        response = client.post(
+            "/api/discover/radio",
+            json={
+                "seeds": [
+                    {
+                        "title": "No Rain (Remastered 2002)",
+                        "artist": "Blind Melon",
+                    }
+                ],
+                "exclude": [
+                    {
+                        "title": "Semi-Charmed Life (2006 Remaster)",
+                        "artist": "thirdeyeblind",
+                    },
+                    {
+                        "title": (
+                            "Third Eye Blind - Semi-Charmed Life / Lyrics"
+                        ),
+                        "artist": "Third Eye Blind",
+                    },
                 ],
             },
             headers=headers,

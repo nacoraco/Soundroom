@@ -76,6 +76,43 @@ describe("playerReducer", () => {
     expect(appended.queue.map((item) => item.id)).toEqual(["existing"]);
   });
 
+  it("removes upcoming auto variants of the current track", () => {
+    const current = {
+      ...track("current", "Semi-Charmed Life (2006 Remaster)"),
+      artist_name: "thirdeyeblind",
+      origin: "auto" as const,
+    };
+    const duplicate = {
+      ...track("duplicate", "Semi-Charmed Life (2006 Remaster)"),
+      artist_name: "thirdeyeblind",
+      origin: "auto" as const,
+    };
+    const variant = {
+      ...track(
+        "variant",
+        "Third Eye Blind - Semi-Charmed Life / Lyrics",
+      ),
+      artist_name: "Third Eye Blind",
+      origin: "auto" as const,
+    };
+    const fresh = {
+      ...track("fresh", "No Rain (Remastered 2002)"),
+      artist_name: "Blind Melon",
+      origin: "auto" as const,
+    };
+    const playing = playerReducer(initialPlayerState, {
+      type: "play",
+      track: current,
+      queue: [current, duplicate, variant, fresh],
+    });
+    const deduped = playerReducer(playing, { type: "dedupeAuto" });
+
+    expect(deduped.queue.map((item) => item.id)).toEqual([
+      "current",
+      "fresh",
+    ]);
+  });
+
   it("moves to the next and previous track", () => {
     const playing = playerReducer(initialPlayerState, {
       type: "play",

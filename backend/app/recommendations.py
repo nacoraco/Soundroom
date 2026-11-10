@@ -353,6 +353,11 @@ def _descriptor_content(value: str) -> bool:
     return any(token in DEDUPE_MARKERS for token in tokens)
 
 
+def _descriptor_leading(value: str) -> bool:
+    tokens = normalize_text(value).split()
+    return bool(tokens and tokens[0] in DEDUPE_MARKERS)
+
+
 def _remove_descriptor_brackets(value: str) -> str:
     def replace(match: re.Match[str]) -> str:
         content = match.group(1)
@@ -369,7 +374,7 @@ def _strip_trailing_descriptors(value: str) -> str:
             if (
                 prefix.strip()
                 and suffix.strip()
-                and _descriptor_content(suffix)
+                and _descriptor_leading(suffix)
             ):
                 result = prefix.strip()
                 continue
@@ -423,7 +428,7 @@ def _identity_metadata(artist: str, title: str) -> tuple[str, str]:
 
 def song_identity(artist: str, title: str) -> str:
     cleaned_artist, cleaned_title = _identity_metadata(artist, title)
-    return f"{normalize_text(cleaned_title)}|{normalize_text(cleaned_artist)}"
+    return f"{_compact(cleaned_title)}|{_compact(cleaned_artist)}"
 
 
 def clean_seed_metadata(artist: str, title: str) -> tuple[str, str]:
@@ -471,8 +476,8 @@ def _match_quality(similar: SimilarTrack, track: Track) -> float:
     if not similar_title or not similar_artist:
         return 0.0
     if (
-        normalize_text(similar_artist) != normalize_text(local_artist)
-        or normalize_text(similar_title) != normalize_text(local_title)
+        _compact(similar_artist) != _compact(local_artist)
+        or _compact(similar_title) != _compact(local_title)
     ):
         return 0.0
     if _version_markers(similar.title) != _version_markers(track.title):

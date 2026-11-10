@@ -5,6 +5,7 @@ import {
   MAX_RECOMMENDATION_HISTORY,
   MAX_RECOMMENDATION_REJECTIONS,
   MAX_RECOMMENDATION_SEEDS,
+  RECENT_RECOMMENDATION_SEEDS,
   addRecommendationHistoryEntry,
   addRecommendationRejection,
   cleanRecommendationMetadata,
@@ -135,7 +136,7 @@ describe("recommendation history", () => {
 describe("recommendation seed selection", () => {
   const original = { title: "Original Song", artist: "Original Artist" };
 
-  it("uses every track above the completion threshold", () => {
+  it("uses qualifying tracks plus one unqualified seed", () => {
     const history = [
       entry(track("song-1", "Song 1"), 200),
       entry(track("recommendation-1", "Recommendation 1"), 200),
@@ -144,27 +145,44 @@ describe("recommendation seed selection", () => {
       entry(track("recommendation-4", "Recommendation 4"), 40),
     ];
 
-    expect(selectRecommendationSeeds(history, original)).toEqual([
+    expect(selectRecommendationSeeds(history, original, () => 0)).toEqual([
       { title: "Song 1", artist: "Test Artist" },
       { title: "Recommendation 1", artist: "Test Artist" },
+      { title: "Recommendation 4", artist: "Test Artist" },
+    ]);
+    expect(selectRecommendationSeeds(history, original, () => 0.999)).toEqual([
+      { title: "Song 1", artist: "Test Artist" },
+      { title: "Recommendation 1", artist: "Test Artist" },
+      { title: "Recommendation 2", artist: "Test Artist" },
     ]);
   });
 
-  it("uses only the ten most recent listened tracks as seeds", () => {
-    const history = Array.from(
-      { length: MAX_RECOMMENDATION_SEEDS + 2 },
-      (_, index) => entry(track(`track-${index}`, `Track ${index}`), 200),
+  it("keeps five recent seeds and fills the rest from older history", () => {
+    const history = Array.from({ length: 20 }, (_, index) =>
+      entry(track(`track-${index}`, `Track ${index}`), 200),
     );
+    const recent = history.slice(-RECENT_RECOMMENDATION_SEEDS).map((item) => ({
+      title: item.track.title,
+      artist: item.track.artist_name,
+    }));
+    const oldest = history.slice(0, 5).map((item) => ({
+      title: item.track.title,
+      artist: item.track.artist_name,
+    }));
 
-    expect(selectRecommendationSeeds(history, original)).toEqual(
+    expect(selectRecommendationSeeds(history, original, () => 0)).toEqual(
       history.slice(-MAX_RECOMMENDATION_SEEDS).map((item) => ({
         title: item.track.title,
         artist: item.track.artist_name,
       })),
     );
+    expect(selectRecommendationSeeds(history, original, () => 0.999)).toEqual([
+      ...oldest,
+      ...recent,
+    ]);
   });
 
-  it("keeps ten listened seeds after many skipped tracks", () => {
+  it("keeps five recent, four older listened, and one skipped seed", () => {
     let history: RecommendationHistoryEntry[] = [];
     for (let index = 0; index < MAX_RECOMMENDATION_SEEDS; index += 1) {
       history = addRecommendationHistoryEntry(
@@ -183,13 +201,17 @@ describe("recommendation seed selection", () => {
       );
     }
 
+    const seeds = selectRecommendationSeeds(history, original, () => 0);
+
     expect(history).toHaveLength(MAX_RECOMMENDATION_HISTORY);
-    expect(selectRecommendationSeeds(history, original)).toEqual(
-      Array.from({ length: MAX_RECOMMENDATION_SEEDS }, (_, index) => ({
-        title: `Listened ${index}`,
+    expect(seeds).toEqual([
+      ...Array.from({ length: 9 }, (_, index) => ({
+        title: `Listened ${index + 1}`,
         artist: "Test Artist",
       })),
-    );
+      { title: "Skipped 89", artist: "Test Artist" },
+    ]);
+    expect(seeds).toHaveLength(MAX_RECOMMENDATION_SEEDS);
   });
 
   it("excludes tracks played for exactly fifty percent", () => {
@@ -333,6 +355,17 @@ describe("recommendation rejections", () => {
         "Lexi Jayde",
       ),
     ).toBe(canonical);
+    expect(
+      recommendationKey(
+        "Semi-Charmed Life (2006 Remaster)",
+        "thirdeyeblind",
+      ),
+    ).toBe(
+      recommendationKey(
+        "Third Eye Blind - Semi-Charmed Life / Lyrics",
+        "Third Eye Blind",
+      ),
+    );
   });
 
   it("keeps numbered parts and different artists distinct", () => {

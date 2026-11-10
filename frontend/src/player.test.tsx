@@ -30,6 +30,8 @@ const secondTrack: Track = {
   title: "Second Song",
 };
 
+let visibilityState: DocumentVisibilityState = "visible";
+
 function LibraryRoute() {
   const { playTrack } = usePlayer();
   return (
@@ -94,9 +96,32 @@ function audioElement(): HTMLAudioElement {
   return audio;
 }
 
+function loadedAudio(currentTime = 30): HTMLAudioElement {
+  const audio = audioElement();
+  Object.defineProperty(audio, "readyState", {
+    configurable: true,
+    value: 4,
+  });
+  Object.defineProperty(audio, "duration", {
+    configurable: true,
+    value: 180,
+  });
+  Object.defineProperty(audio, "currentTime", {
+    configurable: true,
+    writable: true,
+    value: currentTime,
+  });
+  return audio;
+}
+
 describe("PlayerProvider", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    visibilityState = "visible";
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => visibilityState,
+    });
   });
 
   it("keeps playing the current track while routes change", () => {
@@ -129,13 +154,69 @@ describe("PlayerProvider", () => {
     fireEvent.click(screen.getByRole("button", { name: "Play track" }));
     expect(screen.getByTestId("is-playing")).toHaveTextContent("true");
 
-    const audio = audioElement();
+    const audio = loadedAudio(30);
     fireEvent.play(audio);
     fireEvent.pause(audio);
 
     await waitFor(() => {
       expect(screen.getByTestId("is-playing")).toHaveTextContent("false");
     });
+  });
+
+  it("ignores the pause that happens at the end of a track", async () => {
+    renderPlayer();
+
+    const audio = loadedAudio(179.9);
+    fireEvent.click(screen.getByRole("button", { name: "Play track" }));
+    fireEvent.pause(audio);
+
+    expect(screen.getByTestId("is-playing")).toHaveTextContent("true");
+
+    fireEvent.ended(audio);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("current-track")).toHaveTextContent(
+        "Second Song",
+      );
+    });
+    expect(screen.getByTestId("is-playing")).toHaveTextContent("true");
+  });
+
+  it("ignores the pause fired while the next source is starting", async () => {
+    renderPlayer();
+
+    const audio = loadedAudio(30);
+    fireEvent.click(screen.getByRole("button", { name: "Play track" }));
+    fireEvent.ended(audio);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("current-track")).toHaveTextContent(
+        "Second Song",
+      );
+    });
+
+    audio.currentTime = 0;
+    fireEvent.pause(audio);
+
+    expect(screen.getByTestId("is-playing")).toHaveTextContent("true");
+  });
+
+  it("advances tracks while the page is in the background", async () => {
+    renderPlayer();
+
+    const audio = loadedAudio(179.9);
+    fireEvent.click(screen.getByRole("button", { name: "Play track" }));
+    visibilityState = "hidden";
+    document.dispatchEvent(new Event("visibilitychange"));
+    fireEvent.pause(audio);
+    fireEvent.ended(audio);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("current-track")).toHaveTextContent(
+        "Second Song",
+      );
+    });
+    expect(screen.getByTestId("is-playing")).toHaveTextContent("true");
   });
 
   it("shows a paused state when the browser blocks playback", async () => {

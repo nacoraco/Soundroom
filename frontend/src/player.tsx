@@ -25,6 +25,7 @@ import {
   type PlayerTrack,
 } from "./playerState";
 import {
+  MAX_RECOMMENDATION_EXCLUDE,
   RECOMMENDATION_BATCH_SIZE,
   RECOMMENDATION_BUFFER_SIZE,
   addRecommendationHistoryEntry,
@@ -182,11 +183,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     }
     const title = track.title.trim();
     const artist = track.artist_name.trim();
+    const key = recommendationKey(title, artist);
     failedRecommendationKeysRef.current = [
       ...failedRecommendationKeysRef.current.filter(
-        (item) =>
-          item.title.toLowerCase() !== title.toLowerCase() ||
-          item.artist.toLowerCase() !== artist.toLowerCase(),
+        (item) => recommendationKey(item.title, item.artist) !== key,
       ),
       { title, artist },
     ].slice(-10);
@@ -415,6 +415,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       try {
         const snapshot = stateRef.current;
         const start = Math.max(snapshot.currentIndex, 0);
+        const historyExclude = recommendationHistoryRef.current
+          .map((entry) => ({
+            title: entry.track.title,
+            artist: entry.track.artist_name,
+          }))
+          .filter((track) => track.title.trim() && track.artist.trim());
         const queueExclude = [
           ...snapshot.queue.slice(start),
           ...snapshot.queue.slice(0, start),
@@ -430,6 +436,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
           ...rejectedRecommendationKeysRef.current,
           ...failedRecommendationKeysRef.current,
           ...queueExclude,
+          ...historyExclude,
         ]
           .filter((item) => {
             const key = recommendationKey(item.title, item.artist);
@@ -439,7 +446,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
             seenExclude.add(key);
             return true;
           })
-          .slice(0, 50);
+          .slice(0, MAX_RECOMMENDATION_EXCLUDE);
         const result = await discoverRadio(seeds, {
           limit: RECOMMENDATION_BATCH_SIZE,
           exclude,
@@ -456,39 +463,36 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         const existingIds = new Set(
           queueSnapshot.queue.map((track) => track.id),
         );
-        const existingExternal = new Set(
-          queueSnapshot.queue.map(
-            (track) =>
-              `${track.title.trim().toLowerCase()}|${track.artist_name.trim().toLowerCase()}`,
-          ),
-        );
-        const rejectedKeys = new Set(
-          rejectedRecommendationKeysRef.current.map((item) =>
+        const blockedKeys = new Set<string>([
+          ...rejectedRecommendationKeysRef.current.map((item) =>
             recommendationKey(item.title, item.artist),
           ),
-        );
+          ...failedRecommendationKeysRef.current.map((item) =>
+            recommendationKey(item.title, item.artist),
+          ),
+          ...queueSnapshot.queue.map((track) =>
+            recommendationKey(track.title, track.artist_name),
+          ),
+          ...recommendationHistoryRef.current.map((entry) =>
+            recommendationKey(entry.track.title, entry.track.artist_name),
+          ),
+        ]);
         const recommendation = result.recommendations.find((item) => {
-          if (rejectedKeys.has(recommendationKey(item.title, item.artist))) {
+          if (blockedKeys.has(recommendationKey(item.title, item.artist))) {
             return false;
           }
-          if (
-            item.local_track &&
-            rejectedKeys.has(
+          if (item.local_track) {
+            if (existingIds.has(item.local_track.id)) {
+              return false;
+            }
+            return !blockedKeys.has(
               recommendationKey(
                 item.local_track.title,
                 item.local_track.artist_name,
               ),
-            )
-          ) {
-            return false;
+            );
           }
-          if (item.local_track) {
-            return !existingIds.has(item.local_track.id);
-          }
-          const key = `${item.title
-            .trim()
-            .toLowerCase()}|${item.artist.trim().toLowerCase()}`;
-          return !existingExternal.has(key);
+          return true;
         });
         if (!recommendation) {
           return;

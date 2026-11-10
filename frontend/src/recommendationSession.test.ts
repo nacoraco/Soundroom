@@ -238,6 +238,28 @@ describe("recommendation seed selection", () => {
     ]);
   });
 
+  it("deduplicates seed variants of the same song", () => {
+    const history = [
+      entry(track("first", "Same Song", 200, "Same Artist"), 200),
+      entry(
+        track(
+          "second",
+          'Same Artist - Same Song (Lyrics) | "same lyric"',
+          200,
+          "Same Artist",
+        ),
+        200,
+      ),
+    ];
+
+    expect(selectRecommendationSeeds(history, original)).toEqual([
+      {
+        title: 'Same Artist - Same Song (Lyrics) | "same lyric"',
+        artist: "Same Artist",
+      },
+    ]);
+  });
+
   it("includes the currently playing track once it passes the threshold", () => {
     const current = track("current", "Current Song");
     let history = [createRecommendationHistoryEntry(current, 0)];
@@ -282,6 +304,48 @@ describe("recommendation rejections", () => {
     expect(recommendationKey("Café", "Beyoncé")).toBe(
       recommendationKey("cafe", "beyonce"),
     );
+  });
+
+  it("treats video, lyric, and version variants as the same song", () => {
+    const canonical = recommendationKey("drunk text me", "Lexi Jayde");
+
+    expect(
+      recommendationKey(
+        'Lexi Jayde - drunk text me (Lyrics) | "I wish you would drunk text me"',
+        "Lexi Jayde",
+      ),
+    ).toBe(canonical);
+    expect(
+      recommendationKey(
+        "Lexi Jayde - drunk text me (Official Music Video)",
+        "Lexi Jayde",
+      ),
+    ).toBe(canonical);
+    expect(
+      recommendationKey(
+        "Lexi Jayde - drunk text me - Sped Up",
+        "Lexi Jayde",
+      ),
+    ).toBe(canonical);
+    expect(
+      recommendationKey(
+        "Lexi Jayde - drunk text me (Live at Wembley)",
+        "Lexi Jayde",
+      ),
+    ).toBe(canonical);
+  });
+
+  it("keeps numbered parts and different artists distinct", () => {
+    expect(recommendationKey("Song (Part 2)", "Artist")).not.toBe(
+      recommendationKey("Song", "Artist"),
+    );
+    expect(recommendationKey("Song", "Other Artist")).not.toBe(
+      recommendationKey("Song", "Artist"),
+    );
+    expect(cleanRecommendationMetadata("Artist", "Song (Part 2)")).toEqual({
+      title: "Song (Part 2)",
+      artist: "Artist",
+    });
   });
 
   it("stores the newest rejection first and removes duplicates", () => {

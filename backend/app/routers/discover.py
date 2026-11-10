@@ -18,6 +18,7 @@ from ..recommendations import (
     SimilarTrack,
     build_recommendations,
     clean_seed_metadata,
+    song_identity,
 )
 from ..schemas import (
     DiscoverRecommendation,
@@ -27,7 +28,6 @@ from ..schemas import (
     RadioResponse,
     TrackOut,
 )
-from ..text import normalize_text
 
 logger = logging.getLogger(__name__)
 
@@ -214,13 +214,15 @@ def discover_radio(
     db: Session = Depends(get_db),
     client: LastfmClient = Depends(get_lastfm_client),
 ) -> RadioResponse:
-    seed_refs = [
-        SeedReference(
-            title=clean_seed_metadata(seed.artist, seed.title)[1],
-            artist=clean_seed_metadata(seed.artist, seed.title)[0],
-        )
-        for seed in payload.seeds
-    ]
+    seed_refs: list[SeedReference] = []
+    seen_seed_identities: set[str] = set()
+    for seed in payload.seeds:
+        artist, title = clean_seed_metadata(seed.artist, seed.title)
+        identity = song_identity(artist, title)
+        if identity in seen_seed_identities:
+            continue
+        seen_seed_identities.add(identity)
+        seed_refs.append(SeedReference(title=title, artist=artist))
     similar_by_seed = []
     try:
         for seed_ref in seed_refs:
@@ -243,29 +245,17 @@ def discover_radio(
         _load_local_tracks(db),
         limit=RESULT_LIMIT + len(payload.exclude),
     )
-    excluded_keys: set[tuple[str, str]] = set()
-    for item in payload.exclude:
-        artist, title = clean_seed_metadata(item.artist, item.title)
-        excluded_keys.add((normalize_text(title), normalize_text(artist)))
-        excluded_keys.add((normalize_text(item.title), normalize_text(item.artist)))
+    excluded_identities = {
+        song_identity(item.artist, item.title) for item in payload.exclude
+    }
     recommendations = [
         recommendation
         for recommendation in recommendations
-        if (
-            normalize_text(
-                clean_seed_metadata(
-                    recommendation.artist,
-                    recommendation.title,
-                )[1]
-            ),
-            normalize_text(
-                clean_seed_metadata(
-                    recommendation.artist,
-                    recommendation.title,
-                )[0]
-            ),
+        if song_identity(
+            recommendation.artist,
+            recommendation.title,
         )
-        not in excluded_keys
+        not in excluded_identities
     ][: payload.limit]
     return RadioResponse(
         recommendations=[

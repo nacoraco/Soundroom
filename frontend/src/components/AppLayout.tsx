@@ -19,7 +19,7 @@ const navItems = [
   { to: "/discover", label: "Discover", index: "03" },
   { to: "/upload", label: "Upload", index: "04" },
   { to: "/imports", label: "Imports", index: "05" },
-  { to: "/people", label: "People", index: "06", admin: true },
+  { to: "/admin/users", label: "People", index: "06", admin: true },
 ];
 
 const mobileNavItems = [

@@ -46,6 +46,10 @@ export default function App() {
                 <Route element={<AdminRoute />}>
                   <Route path="/admin/users" element={<AdminUsersPage />} />
                   <Route
+                    path="/people"
+                    element={<Navigate to="/admin/users" replace />}
+                  />
+                  <Route
                     path="/admin/settings"
                     element={<AdminSettingsPage />}
                   />

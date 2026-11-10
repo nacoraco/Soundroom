@@ -6,6 +6,8 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.media.MediaMetadata;
 import android.media.session.MediaSession;
 import android.media.session.PlaybackState;
@@ -30,6 +32,7 @@ public class PlaybackService extends Service {
 
     private MediaSession mediaSession;
     private PowerManager.WakeLock wakeLock;
+    private Bitmap artwork;
     private String currentTitle = "Soundroom";
     private String currentArtist = "";
     private String currentAlbum = "";
@@ -65,6 +68,7 @@ public class PlaybackService extends Service {
         super.onCreate();
         instance = this;
         createNotificationChannel();
+        artwork = BitmapFactory.decodeResource(getResources(), R.drawable.media_artwork);
 
         mediaSession = new MediaSession(this, "Soundroom");
         mediaSession.setCallback(
@@ -163,12 +167,18 @@ public class PlaybackService extends Service {
         currentPositionMs = Math.max(positionMs, 0);
         isPlaying = playing;
 
-        MediaMetadata metadata = new MediaMetadata.Builder()
+        MediaMetadata.Builder metadataBuilder = new MediaMetadata.Builder()
             .putString(MediaMetadata.METADATA_KEY_TITLE, currentTitle)
             .putString(MediaMetadata.METADATA_KEY_ARTIST, currentArtist)
             .putString(MediaMetadata.METADATA_KEY_ALBUM, currentAlbum)
-            .putLong(MediaMetadata.METADATA_KEY_DURATION, currentDurationMs)
-            .build();
+            .putLong(MediaMetadata.METADATA_KEY_DURATION, currentDurationMs);
+        if (artwork != null) {
+            metadataBuilder
+                .putBitmap(MediaMetadata.METADATA_KEY_ART, artwork)
+                .putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, artwork)
+                .putBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON, artwork);
+        }
+        MediaMetadata metadata = metadataBuilder.build();
         mediaSession.setMetadata(metadata);
 
         long actions =
@@ -234,6 +244,8 @@ public class PlaybackService extends Service {
             .setContentText(currentArtist.isEmpty() ? "Soundroom" : currentArtist)
             .setSubText(currentAlbum.isEmpty() ? "Soundroom" : currentAlbum)
             .setSmallIcon(android.R.drawable.ic_media_play)
+            .setLargeIcon(artwork)
+            .setColor(0xFFB8873F)
             .setContentIntent(pendingIntent)
             .setStyle(style)
             .addAction(previousAction)

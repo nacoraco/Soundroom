@@ -17,6 +17,7 @@ from app.recommendations import (
     clean_seed_metadata,
     lastfm_seed_metadata,
     match_local_track,
+    song_identity,
 )
 from app.routers.discover import get_lastfm_client
 from app.text import normalize_text
@@ -158,6 +159,59 @@ def test_seed_metadata_cleans_common_import_suffixes():
         "Someone",
         "Song - Part 2",
     )
+    assert clean_seed_metadata("Someone", "Song (Part 2)") == (
+        "Someone",
+        "Song (Part 2)",
+    )
+    assert clean_seed_metadata(
+        "Lexi Jayde",
+        'Lexi Jayde - drunk text me (Lyrics) | "I wish you would drunk text me"',
+    ) == ("Lexi Jayde", "drunk text me")
+    assert clean_seed_metadata(
+        "Lexi Jayde",
+        "Lexi Jayde - drunk text me - Sped Up",
+    ) == ("Lexi Jayde", "drunk text me")
+
+
+def test_song_identity_collapses_video_and_version_variants():
+    canonical = song_identity("Lexi Jayde", "drunk text me")
+
+    assert (
+        song_identity(
+            "Lexi Jayde",
+            'Lexi Jayde - drunk text me (Lyrics) | "I wish you would drunk text me"',
+        )
+        == canonical
+    )
+    assert (
+        song_identity(
+            "Lexi Jayde",
+            "Lexi Jayde - drunk text me (Official Music Video)",
+        )
+        == canonical
+    )
+    assert (
+        song_identity(
+            "Lexi Jayde",
+            "Lexi Jayde - drunk text me - Sped Up",
+        )
+        == canonical
+    )
+    assert (
+        song_identity(
+            "Lexi Jayde",
+            "Lexi Jayde - drunk text me (Live at Wembley)",
+        )
+        == canonical
+    )
+    assert song_identity("Artist", "Song (Part 2)") != song_identity(
+        "Artist",
+        "Song",
+    )
+    assert song_identity("Other Artist", "Song") != song_identity(
+        "Artist",
+        "Song",
+    )
 
 
 def test_local_matching_handles_import_suffixes_and_artists():
@@ -283,6 +337,63 @@ def test_build_recommendations_merges_ranks_excludes_and_limits():
         for recommendation in result
     )
     assert len(result) == 20
+
+
+def test_build_recommendations_collapses_variants_across_seeds():
+    seed_one = SeedReference("Seed One", "Artist One")
+    seed_two = SeedReference("Seed Two", "Artist Two")
+    similar_one = [
+        SimilarTrack(
+            'Shared Song (Lyrics) | "shared lyric"',
+            "Shared Artist",
+            0.9,
+        ),
+        SimilarTrack("Other Song", "Other Artist", 0.5),
+    ]
+    similar_two = [
+        SimilarTrack(
+            "Shared Song (Official Music Video)",
+            "Shared Artist",
+            0.8,
+        ),
+    ]
+
+    result = build_recommendations(
+        [seed_one, seed_two],
+        [(seed_one, similar_one), (seed_two, similar_two)],
+        [],
+    )
+
+    shared = [
+        recommendation
+        for recommendation in result
+        if song_identity(recommendation.artist, recommendation.title)
+        == song_identity("Shared Artist", "Shared Song")
+    ]
+    assert len(shared) == 1
+    assert shared[0].score == 1.7
+    assert shared[0].seed_count == 2
+
+
+def test_build_recommendations_prefers_local_track_for_variants():
+    local = make_memory_track(
+        "Shared Artist - Shared Song (Official Video)",
+        "Shared Artist",
+    )
+    seed = SeedReference("Seed", "Seed Artist")
+    similar = [
+        SimilarTrack(
+            'Shared Song (Lyrics) | "shared lyric"',
+            "Shared Artist",
+            0.9,
+        ),
+        SimilarTrack("Shared Song", "Shared Artist", 0.8),
+    ]
+
+    result = build_recommendations([seed], [(seed, similar)], [local])
+
+    assert len(result) == 1
+    assert result[0].local_track is local
 
 
 def test_discover_endpoint_returns_local_and_external_recommendations(
@@ -465,6 +576,82 @@ def test_radio_endpoint_excludes_rejected_tracks_with_video_suffixes(
                         "artist": "Rejected Artist",
                     }
                 ],
+            },
+            headers=headers,
+        )
+    finally:
+        clear_override(client)
+
+    assert response.status_code == 200
+    assert [item["title"] for item in response.json()["recommendations"]] == [
+        "Fresh Song"
+    ]
+
+
+def test_radio_endpoint_excludes_listened_variants(client: TestClient):
+    headers = admin_headers(client)
+    fake = FakeLastfm(
+        {
+            ("Lexi Jayde", "drunk text me"): [
+                SimilarTrack("drunk text me", "Lexi Jayde", 0.9),
+                SimilarTrack("Fresh Song", "Fresh Artist", 0.8),
+            ]
+        }
+    )
+    override_lastfm(client, fake)
+    try:
+        response = client.post(
+            "/api/discover/radio",
+            json={
+                "seeds": [
+                    {"title": "drunk text me", "artist": "Lexi Jayde"}
+                ],
+                "exclude": [
+                    {
+                        "title": (
+                            'Lexi Jayde - drunk text me (Lyrics) | '
+                            '"I wish you would drunk text me"'
+                        ),
+                        "artist": "Lexi Jayde",
+                    }
+                ],
+            },
+            headers=headers,
+        )
+    finally:
+        clear_override(client)
+
+    assert response.status_code == 200
+    assert [item["title"] for item in response.json()["recommendations"]] == [
+        "Fresh Song"
+    ]
+
+
+def test_radio_endpoint_excludes_variants_of_seed_tracks(client: TestClient):
+    headers = admin_headers(client)
+    fake = FakeLastfm(
+        {
+            ("Seed Artist", "Seed Song"): [
+                SimilarTrack(
+                    "Seed Song (Official Music Video)",
+                    "Seed Artist",
+                    0.9,
+                ),
+                SimilarTrack("Fresh Song", "Fresh Artist", 0.8),
+            ]
+        }
+    )
+    override_lastfm(client, fake)
+    try:
+        response = client.post(
+            "/api/discover/radio",
+            json={
+                "seeds": [
+                    {
+                        "title": "Seed Artist - Seed Song (Official Video)",
+                        "artist": "Seed Artist",
+                    }
+                ]
             },
             headers=headers,
         )

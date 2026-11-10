@@ -8,7 +8,7 @@ import httpx
 from .models import Track
 from .text import normalize_text
 
-TRAILING_BRACKETS = re.compile(r"\s*[\(\[][^)\]]*[\)\]]\s*$")
+BRACKET_GROUP = re.compile(r"[\(\[]([^)\]]*)[\)\]]")
 VERSION_MARKERS = (
     "live",
     "concert",
@@ -24,14 +24,68 @@ VERSION_MARKERS = (
     "extended",
     "nightcore",
     "slowed",
+    "sped",
     "sped up",
     "reverb",
     "session",
     "bbc",
 )
+DEDUPE_MARKERS = frozenset(VERSION_MARKERS) | frozenset(
+    {
+        "official",
+        "video",
+        "music",
+        "lyric",
+        "lyrics",
+        "audio",
+        "visualizer",
+        "visualiser",
+        "hd",
+        "hq",
+        "4k",
+        "8k",
+        "8d",
+        "mv",
+        "clip",
+        "videoclip",
+        "color",
+        "coded",
+        "explicit",
+        "clean",
+        "uncensored",
+        "censored",
+        "remaster",
+        "remastered",
+        "topic",
+        "feat",
+        "ft",
+        "featuring",
+        "version",
+        "album",
+        "single",
+        "original",
+        "radio",
+        "movie",
+        "soundtrack",
+        "ost",
+        "from",
+    }
+)
+TRAILING_DESCRIPTOR = re.compile(
+    r"\s*(?:[-–—|]\s*)?(?:"
+    r"official\s+(?:music\s+)?video|official\s+audio|lyric\s+video|"
+    r"lyrics?|audio|visuali[sz]er|music\s+video|hd|hq|4k|8k|8d|"
+    r"explicit|clean|remaster(?:ed)?|sped\s+up|slowed(?:\s*\+\s*reverb)?|"
+    r"nightcore|reverb|radio\s+edit|album\s+version|single\s+version|"
+    r"original\s+version|feat\.?\s+.*"
+    r")\s*$",
+    re.IGNORECASE,
+)
+ARTIST_TOPIC_SUFFIX = re.compile(r"\s*-\s*topic\s*$", re.IGNORECASE)
 SIMILAR_LIMIT = 20
 RESULT_LIMIT = 20
 MAX_RECOMMENDATION_HISTORY = 10
+MAX_RECOMMENDATION_EXCLUDE = 200
 
 
 class LastfmError(Exception):
@@ -61,7 +115,7 @@ class SeedReference:
     def key(self) -> str:
         if self.track_id is not None:
             return f"local:{self.track_id}"
-        return f"external:{normalize_text(self.title)}|{normalize_text(self.artist)}"
+        return f"external:{song_identity(self.artist, self.title)}"
 
 
 @dataclass(frozen=True)
@@ -276,12 +330,12 @@ def _compact(value: str) -> str:
     return normalize_text(value).replace(" ", "")
 
 
-def _strip_trailing_brackets(value: str) -> str:
+def _strip_descriptor_brackets(value: str) -> str:
     previous = None
     result = value.strip()
     while previous != result:
         previous = result
-        result = TRAILING_BRACKETS.sub("", result).strip()
+        result = _remove_descriptor_brackets(result).strip()
     return result
 
 
@@ -294,14 +348,98 @@ def _version_markers(title: str) -> frozenset[str]:
     )
 
 
+def _descriptor_content(value: str) -> bool:
+    tokens = normalize_text(value).split()
+    return any(token in DEDUPE_MARKERS for token in tokens)
+
+
+def _remove_descriptor_brackets(value: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        content = match.group(1)
+        return " " if _descriptor_content(content) else match.group(0)
+
+    return BRACKET_GROUP.sub(replace, value)
+
+
+def _strip_trailing_descriptors(value: str) -> str:
+    result = value.strip()
+    while result:
+        if " - " in result:
+            prefix, suffix = result.rsplit(" - ", 1)
+            if (
+                prefix.strip()
+                and suffix.strip()
+                and _descriptor_content(suffix)
+            ):
+                result = prefix.strip()
+                continue
+
+        stripped = TRAILING_DESCRIPTOR.sub("", result).strip()
+        if stripped and stripped != result:
+            result = stripped
+            continue
+        break
+    return result
+
+
+def _identity_metadata(artist: str, title: str) -> tuple[str, str]:
+    cleaned_artist = ARTIST_TOPIC_SUFFIX.sub("", artist.strip()).strip()
+    cleaned_title = title.strip()
+
+    for separator in ("|", "//"):
+        if separator in cleaned_title:
+            cleaned_title = cleaned_title.split(separator, 1)[0].strip()
+
+    cleaned_title = _strip_trailing_descriptors(
+        _remove_descriptor_brackets(cleaned_title)
+    )
+
+    if " - " in cleaned_title:
+        prefix, suffix = cleaned_title.split(" - ", 1)
+        prefix = prefix.strip()
+        suffix = _strip_trailing_descriptors(
+            _remove_descriptor_brackets(suffix.strip())
+        )
+        prefix_compact = _compact(prefix)
+        artist_compact = _compact(cleaned_artist)
+        if (
+            prefix
+            and suffix
+            and prefix_compact
+            and artist_compact
+            and (
+                prefix_compact in artist_compact
+                or artist_compact in prefix_compact
+            )
+        ):
+            cleaned_artist = prefix
+            cleaned_title = suffix
+
+    cleaned_title = _strip_trailing_descriptors(
+        _remove_descriptor_brackets(cleaned_title)
+    )
+    return cleaned_artist or artist.strip(), cleaned_title or title.strip()
+
+
+def song_identity(artist: str, title: str) -> str:
+    cleaned_artist, cleaned_title = _identity_metadata(artist, title)
+    return f"{normalize_text(cleaned_title)}|{normalize_text(cleaned_artist)}"
+
+
 def clean_seed_metadata(artist: str, title: str) -> tuple[str, str]:
     artist = artist.strip()
-    title = _strip_trailing_brackets(title)
+    title = title.strip()
+    for separator in ("|", "//"):
+        if separator in title:
+            title = title.split(separator, 1)[0].strip()
+    title = _strip_trailing_descriptors(_strip_descriptor_brackets(title))
 
     if " - " in title:
         prefix, suffix = title.split(" - ", 1)
         prefix = prefix.strip()
-        suffix = _strip_trailing_brackets(suffix)
+        suffix = _strip_trailing_descriptors(
+            _strip_descriptor_brackets(suffix)
+        )
         prefix_compact = _compact(prefix)
         artist_compact = _compact(artist)
         if (
@@ -371,43 +509,47 @@ def build_recommendations(
     seed_ids = {
         seed.track_id for seed in seed_refs if seed.track_id is not None
     }
-    seed_keys = {
-        (normalize_text(seed.title), normalize_text(seed.artist))
-        for seed in seed_refs
+    seed_identities = {
+        song_identity(seed.artist, seed.title) for seed in seed_refs
     }
     scores: dict[str, float] = {}
     seed_counts: dict[str, set[str]] = {}
     entries: dict[str, tuple[str, str, Track | None]] = {}
+    best_matches: dict[str, float] = {}
 
     for seed, similar_tracks in similar_by_seed:
         matched: dict[str, float] = {}
         for similar in similar_tracks:
             local_track = match_local_track(similar, local_tracks)
-            candidate_key = (
-                normalize_text(similar.title),
-                normalize_text(similar.artist),
-            )
-            if candidate_key in seed_keys:
+            identity = song_identity(similar.artist, similar.title)
+            if identity in seed_identities:
                 continue
-            if local_track is not None and local_track.id in seed_ids:
-                continue
-            if local_track is not None and (
-                normalize_text(local_track.title),
-                normalize_text(local_track.artist.name),
-            ) in seed_keys:
-                continue
-
             if local_track is not None:
-                key = f"local:{local_track.id}"
-                title = local_track.title
-                artist = local_track.artist.name
-            else:
-                key = f"external:{candidate_key[0]}|{candidate_key[1]}"
-                title = similar.title
-                artist = similar.artist
+                if local_track.id in seed_ids:
+                    continue
+                if (
+                    song_identity(
+                        local_track.artist.name,
+                        local_track.title,
+                    )
+                    in seed_identities
+                ):
+                    continue
+
+            key = f"song:{identity}"
+            if local_track is not None:
+                entries[key] = (
+                    local_track.title,
+                    local_track.artist.name,
+                    local_track,
+                )
+            elif key not in entries or similar.match > best_matches.get(
+                key, -1.0
+            ):
+                entries[key] = (similar.title, similar.artist, None)
+                best_matches[key] = similar.match
 
             matched[key] = max(matched.get(key, 0.0), similar.match)
-            entries[key] = (title, artist, local_track)
 
         for key, match in matched.items():
             scores[key] = scores.get(key, 0.0) + match

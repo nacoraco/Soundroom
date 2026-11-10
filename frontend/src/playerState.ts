@@ -1,3 +1,4 @@
+import { recommendationKey } from "./recommendationSession";
 import type { ImportJobStatus, Track } from "./types";
 
 export interface PlayerTrack extends Track {
@@ -185,10 +186,27 @@ export function playerReducer(
       if (action.tracks.length === 0) {
         return state;
       }
-      const tracks = action.tracks.map((track) => ({
-        ...track,
-        origin: "auto" as const,
-      }));
+      const existingKeys = new Set(
+        state.queue.map((track) =>
+          recommendationKey(track.title, track.artist_name),
+        ),
+      );
+      const tracks = action.tracks
+        .filter((track) => {
+          const key = recommendationKey(track.title, track.artist_name);
+          if (existingKeys.has(key)) {
+            return false;
+          }
+          existingKeys.add(key);
+          return true;
+        })
+        .map((track) => ({
+          ...track,
+          origin: "auto" as const,
+        }));
+      if (tracks.length === 0) {
+        return state;
+      }
       return {
         ...state,
         queue: [...state.queue, ...tracks],

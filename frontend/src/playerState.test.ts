@@ -54,6 +54,28 @@ describe("playerReducer", () => {
     expect(duplicate).toBe(queued);
   });
 
+  it("does not append auto recommendations that duplicate a queued variant", () => {
+    const existing = track(
+      "existing",
+      'Test Artist - Drunk Text Me (Lyrics) | "quote"',
+    );
+    const duplicate = track(
+      "duplicate",
+      "Test Artist - Drunk Text Me (Official Music Video)",
+    );
+    const playing = playerReducer(initialPlayerState, {
+      type: "play",
+      track: existing,
+    });
+    const appended = playerReducer(playing, {
+      type: "appendAuto",
+      tracks: [duplicate],
+    });
+
+    expect(appended).toBe(playing);
+    expect(appended.queue.map((item) => item.id)).toEqual(["existing"]);
+  });
+
   it("moves to the next and previous track", () => {
     const playing = playerReducer(initialPlayerState, {
       type: "play",

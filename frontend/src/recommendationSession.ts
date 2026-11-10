@@ -6,7 +6,84 @@ export const RECOMMENDATION_BATCH_SIZE = 1;
 export const RECOMMENDATION_BUFFER_SIZE = 2;
 export const MAX_RECOMMENDATION_SEEDS = 10;
 export const MAX_RECOMMENDATION_REJECTIONS = 100;
-const TRAILING_BRACKETS = /\s*[([][^)\]]*[)\]]\s*$/;
+export const MAX_RECOMMENDATION_EXCLUDE = 200;
+const VERSION_MARKERS = new Set([
+  "live",
+  "concert",
+  "performance",
+  "unplugged",
+  "remix",
+  "edit",
+  "cover",
+  "karaoke",
+  "instrumental",
+  "acoustic",
+  "demo",
+  "extended",
+  "nightcore",
+  "slowed",
+  "sped",
+  "reverb",
+  "session",
+  "bbc",
+]);
+const DESCRIPTOR_WORDS = new Set([
+  "official",
+  "video",
+  "music",
+  "lyric",
+  "lyrics",
+  "audio",
+  "visualizer",
+  "visualiser",
+  "hd",
+  "hq",
+  "4k",
+  "8k",
+  "8d",
+  "mv",
+  "clip",
+  "videoclip",
+  "color",
+  "coded",
+  "explicit",
+  "clean",
+  "uncensored",
+  "censored",
+  "remaster",
+  "remastered",
+  "topic",
+  "feat",
+  "ft",
+  "featuring",
+  "version",
+  "album",
+  "single",
+  "original",
+  "radio",
+  "movie",
+  "soundtrack",
+  "ost",
+  "from",
+]);
+const DEDUPE_WORDS = new Set([...VERSION_MARKERS, ...DESCRIPTOR_WORDS]);
+const BRACKET_GROUP = /[([][^)\]]*[)\]]/g;
+const TRAILING_DESCRIPTOR_PHRASES = [
+  "official music video",
+  "official video",
+  "official audio",
+  "lyric video",
+  "lyrics video",
+  "music video",
+  "audio only",
+  "sped up",
+  "slowed down",
+  "slowed + reverb",
+  "radio edit",
+  "album version",
+  "single version",
+  "original version",
+];
 
 export interface RecommendationSeed {
   title: string;
@@ -121,12 +198,53 @@ export function recommendationCompletion(
   return entry.progressSeconds / entry.durationSeconds;
 }
 
-function stripTrailingBrackets(value: string): string {
+function isDescriptorContent(value: string): boolean {
+  const tokens = normalizeRecommendationText(value).split(" ").filter(Boolean);
+  return tokens.some((token) => DEDUPE_WORDS.has(token));
+}
+
+function removeDescriptorBrackets(value: string): string {
+  return value.replace(BRACKET_GROUP, (match) => {
+    const content = match.slice(1, -1);
+    return isDescriptorContent(content) ? " " : match;
+  });
+}
+
+function stripTrailingDescriptors(value: string): string {
   let result = value.trim();
   let previous = "";
   while (previous !== result) {
     previous = result;
-    result = result.replace(TRAILING_BRACKETS, "").trim();
+
+    const separatorIndex = result.lastIndexOf(" - ");
+    if (separatorIndex !== -1) {
+      const prefix = result.slice(0, separatorIndex).trim();
+      const suffix = result.slice(separatorIndex + 3).trim();
+      if (prefix && suffix && isDescriptorContent(suffix)) {
+        result = prefix;
+        continue;
+      }
+    }
+
+    const lower = result.toLowerCase();
+    const phrase = TRAILING_DESCRIPTOR_PHRASES.find((candidate) =>
+      lower.endsWith(candidate),
+    );
+    if (phrase) {
+      result = result.slice(0, result.length - phrase.length).trim();
+      continue;
+    }
+
+    const tokens = result.split(/\s+/).filter(Boolean);
+    if (tokens.length > 1) {
+      const last = normalizeRecommendationText(tokens[tokens.length - 1]);
+      if (DEDUPE_WORDS.has(last)) {
+        tokens.pop();
+        result = tokens.join(" ");
+        continue;
+      }
+    }
+    break;
   }
   return result;
 }
@@ -144,39 +262,65 @@ export function normalizeRecommendationText(value: string): string {
     .trim();
 }
 
-export function cleanRecommendationMetadata(
+function cleanIdentityMetadata(
   artist: string,
   title: string,
 ): { title: string; artist: string } {
-  const cleanedArtist = artist.trim();
-  const cleanedTitle = stripTrailingBrackets(title);
+  let cleanedArtist = artist.trim().replace(/\s*-\s*topic\s*$/i, "");
+  let cleanedTitle = title.trim();
+
+  for (const separator of ["|", "//"]) {
+    const index = cleanedTitle.indexOf(separator);
+    if (index !== -1) {
+      cleanedTitle = cleanedTitle.slice(0, index).trim();
+    }
+  }
+
+  cleanedTitle = stripTrailingDescriptors(
+    removeDescriptorBrackets(cleanedTitle),
+  );
 
   if (cleanedTitle.includes(" - ")) {
-    const [prefix, suffix] = cleanedTitle.split(" - ", 2);
-    const cleanedPrefix = prefix.trim();
-    const cleanedSuffix = stripTrailingBrackets(suffix);
-    const prefixCompact = compactMetadata(cleanedPrefix);
+    const separatorIndex = cleanedTitle.indexOf(" - ");
+    const prefix = cleanedTitle.slice(0, separatorIndex).trim();
+    const suffix = stripTrailingDescriptors(
+      removeDescriptorBrackets(
+        cleanedTitle.slice(separatorIndex + 3).trim(),
+      ),
+    );
+    const prefixCompact = compactMetadata(prefix);
     const artistCompact = compactMetadata(cleanedArtist);
     if (
-      cleanedPrefix &&
-      cleanedSuffix &&
+      prefix &&
+      suffix &&
       prefixCompact &&
       artistCompact &&
       (prefixCompact.includes(artistCompact) ||
         artistCompact.includes(prefixCompact))
     ) {
-      return { title: cleanedSuffix, artist: cleanedPrefix };
+      cleanedArtist = prefix;
+      cleanedTitle = suffix;
     }
   }
 
+  cleanedTitle = stripTrailingDescriptors(
+    removeDescriptorBrackets(cleanedTitle),
+  );
   return {
     title: cleanedTitle || title.trim(),
-    artist: cleanedArtist,
+    artist: cleanedArtist || artist.trim(),
   };
 }
 
+export function cleanRecommendationMetadata(
+  artist: string,
+  title: string,
+): { title: string; artist: string } {
+  return cleanIdentityMetadata(artist, title);
+}
+
 export function recommendationKey(title: string, artist: string): string {
-  const metadata = cleanRecommendationMetadata(artist, title);
+  const metadata = cleanIdentityMetadata(artist, title);
   return `${normalizeRecommendationText(metadata.title)}|${normalizeRecommendationText(
     metadata.artist,
   )}`;
@@ -243,7 +387,7 @@ export function selectRecommendationSeeds(
     if (!title || !artist) {
       continue;
     }
-    const key = `${title.toLowerCase()}|${artist.toLowerCase()}`;
+    const key = recommendationKey(title, artist);
     if (seen.has(key)) {
       continue;
     }

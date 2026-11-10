@@ -6,6 +6,7 @@ import {
   MAX_RECOMMENDATION_REJECTIONS,
   MAX_RECOMMENDATION_SEEDS,
   RECENT_RECOMMENDATION_SEEDS,
+  RANDOM_QUALIFYING_SEEDS,
   addRecommendationHistoryEntry,
   addRecommendationRejection,
   cleanRecommendationMetadata,
@@ -136,7 +137,7 @@ describe("recommendation history", () => {
 describe("recommendation seed selection", () => {
   const original = { title: "Original Song", artist: "Original Artist" };
 
-  it("uses qualifying tracks plus one unqualified seed", () => {
+  it("uses every track above the completion threshold", () => {
     const history = [
       entry(track("song-1", "Song 1"), 200),
       entry(track("recommendation-1", "Recommendation 1"), 200),
@@ -145,19 +146,13 @@ describe("recommendation seed selection", () => {
       entry(track("recommendation-4", "Recommendation 4"), 40),
     ];
 
-    expect(selectRecommendationSeeds(history, original, () => 0)).toEqual([
+    expect(selectRecommendationSeeds(history, original)).toEqual([
       { title: "Song 1", artist: "Test Artist" },
       { title: "Recommendation 1", artist: "Test Artist" },
-      { title: "Recommendation 4", artist: "Test Artist" },
-    ]);
-    expect(selectRecommendationSeeds(history, original, () => 0.999)).toEqual([
-      { title: "Song 1", artist: "Test Artist" },
-      { title: "Recommendation 1", artist: "Test Artist" },
-      { title: "Recommendation 2", artist: "Test Artist" },
     ]);
   });
 
-  it("keeps five recent seeds and fills the rest from older history", () => {
+  it("keeps five recent seeds and adds five random older seeds", () => {
     const history = Array.from({ length: 20 }, (_, index) =>
       entry(track(`track-${index}`, `Track ${index}`), 200),
     );
@@ -165,7 +160,7 @@ describe("recommendation seed selection", () => {
       title: item.track.title,
       artist: item.track.artist_name,
     }));
-    const oldest = history.slice(0, 5).map((item) => ({
+    const oldest = history.slice(0, RANDOM_QUALIFYING_SEEDS).map((item) => ({
       title: item.track.title,
       artist: item.track.artist_name,
     }));
@@ -182,7 +177,7 @@ describe("recommendation seed selection", () => {
     ]);
   });
 
-  it("keeps five recent, four older listened, and one skipped seed", () => {
+  it("keeps five recent and five older listened seeds, ignoring skipped tracks", () => {
     let history: RecommendationHistoryEntry[] = [];
     for (let index = 0; index < MAX_RECOMMENDATION_SEEDS; index += 1) {
       history = addRecommendationHistoryEntry(
@@ -204,13 +199,12 @@ describe("recommendation seed selection", () => {
     const seeds = selectRecommendationSeeds(history, original, () => 0);
 
     expect(history).toHaveLength(MAX_RECOMMENDATION_HISTORY);
-    expect(seeds).toEqual([
-      ...Array.from({ length: 9 }, (_, index) => ({
-        title: `Listened ${index + 1}`,
+    expect(seeds).toEqual(
+      Array.from({ length: MAX_RECOMMENDATION_SEEDS }, (_, index) => ({
+        title: `Listened ${index}`,
         artist: "Test Artist",
       })),
-      { title: "Skipped 89", artist: "Test Artist" },
-    ]);
+    );
     expect(seeds).toHaveLength(MAX_RECOMMENDATION_SEEDS);
   });
 

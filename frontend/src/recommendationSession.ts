@@ -6,8 +6,7 @@ export const RECOMMENDATION_BATCH_SIZE = 1;
 export const RECOMMENDATION_BUFFER_SIZE = 2;
 export const MAX_RECOMMENDATION_SEEDS = 10;
 export const RECENT_RECOMMENDATION_SEEDS = 5;
-export const RANDOM_QUALIFYING_SEEDS = 4;
-export const RANDOM_UNQUALIFIED_SEEDS = 1;
+export const RANDOM_QUALIFYING_SEEDS = 5;
 export const MAX_RECOMMENDATION_REJECTIONS = 100;
 export const MAX_RECOMMENDATION_EXCLUDE = 200;
 const VERSION_MARKERS = new Set([
@@ -424,71 +423,15 @@ export function selectRecommendationSeeds(
     return title && artist ? [{ title, artist }] : [];
   }
 
-  const unqualified: { seed: RecommendationSeed; index: number }[] = [];
-  const seenUnqualified = new Set<string>();
-
-  for (let index = history.length - 1; index >= 0; index -= 1) {
-    const entry = history[index];
-    if (entry.track.pending || entry.durationSeconds <= 0) {
-      continue;
-    }
-    if (
-      recommendationCompletion(entry) >
-      RECOMMENDATION_COMPLETION_THRESHOLD
-    ) {
-      continue;
-    }
-    const title = entry.track.title.trim();
-    const artist = entry.track.artist_name.trim();
-    if (!title || !artist) {
-      continue;
-    }
-    const key = recommendationKey(title, artist);
-    if (seenQualifying.has(key) || seenUnqualified.has(key)) {
-      continue;
-    }
-    seenUnqualified.add(key);
-    unqualified.push({ seed: { title, artist }, index });
-  }
-
   const recent = qualifying.slice(0, RECENT_RECOMMENDATION_SEEDS);
   const older = qualifying.slice(RECENT_RECOMMENDATION_SEEDS);
-  const qualifyingPicks = pickRandomSeeds(
+  const randomSeeds = pickRandomSeeds(
     older,
     RANDOM_QUALIFYING_SEEDS,
     random,
   );
-  const unqualifiedPicks = pickRandomSeeds(
-    unqualified,
-    RANDOM_UNQUALIFIED_SEEDS,
-    random,
-  );
 
-  const selected = [...recent, ...qualifyingPicks, ...unqualifiedPicks];
-  const selectedKeys = new Set(
-    selected.map((item) =>
-      recommendationKey(item.seed.title, item.seed.artist),
-    ),
-  );
-  const remaining = older.filter(
-    (item) =>
-      !selectedKeys.has(
-        recommendationKey(item.seed.title, item.seed.artist),
-      ),
-  );
-  const fill = pickRandomSeeds(
-    remaining,
-    Math.max(
-      0,
-      MAX_RECOMMENDATION_SEEDS -
-        recent.length -
-        qualifyingPicks.length -
-        unqualifiedPicks.length,
-    ),
-    random,
-  );
-
-  return [...selected, ...fill]
+  return [...recent, ...randomSeeds]
     .sort((left, right) => left.index - right.index)
     .map((item) => item.seed);
 }

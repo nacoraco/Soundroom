@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from .config import Settings, get_settings
 from .db import SessionLocal
 from .llm_review import review_candidates_with_llm
+from . import queue_service
 from .models import (
     Artist,
     RipJob,
@@ -442,6 +443,7 @@ def _fail_job(db: Session, job_id, message: str) -> None:
     job.finished_at = datetime.now(timezone.utc)
     db.add(job)
     db.commit()
+    queue_service.mark_job_failed(db, job_id, message)
 
 
 def _publish_download(
@@ -505,6 +507,7 @@ def _publish_download(
                 job.finished_at = datetime.now(timezone.utc)
                 db.add(job)
                 db.commit()
+                queue_service.mark_job_ready(db, job.id, existing.id)
                 final_path.unlink(missing_ok=True)
                 return
 
@@ -555,6 +558,7 @@ def _publish_download(
             job.finished_at = datetime.now(timezone.utc)
             db.add(job)
             db.commit()
+            queue_service.mark_job_ready(db, job.id, track.id)
         except Exception:
             db.rollback()
             final_path.unlink(missing_ok=True)

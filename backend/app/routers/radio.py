@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
+from .. import queue_service
 from ..config import Settings, get_settings
 from ..db import get_db
 from ..deps import AuthContext, get_current_auth, require_csrf
@@ -103,6 +104,8 @@ def update_session(
     session.enabled = True
     if payload.discovery_level is not None:
         session.discovery_level = payload.discovery_level
+        session.queue_exhausted = False
+        session.revision = (session.revision or 0) + 1
     if payload.reset_seed:
         session.seed_track_id = None
     if payload.seed_track_id is not None:
@@ -223,6 +226,10 @@ def submit_feedback(
         reason=payload.reason,
         track_id=track.id if track is not None else None,
     )
+    if payload.verdict == "reject":
+        queue_service.remove_items_by_recording_key(
+            db, ctx.user.id, recording_key
+        )
     return {"recording_key": recording_key, "verdict": payload.verdict}
 
 

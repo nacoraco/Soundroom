@@ -13,6 +13,8 @@ import type {
   PlaylistCreateInput,
   PlaylistDetail,
   PlaylistSummary,
+  QueueImportInput,
+  QueueState,
   RadioBatch,
   RadioFeedbackInput,
   RadioListenInput,
@@ -259,6 +261,83 @@ export async function postRadioListen(
   input: RadioListenInput,
 ): Promise<RadioListenResult> {
   return request<RadioListenResult>("/api/radio/listen", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function getQueue(): Promise<QueueState> {
+  return request<QueueState>("/api/queue");
+}
+
+export async function playQueue(input: {
+  track_ids: string[];
+  start_track_id?: string;
+}): Promise<QueueState> {
+  return request<QueueState>("/api/queue/play", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function playQueueItem(itemId: string): Promise<QueueState> {
+  return request<QueueState>("/api/queue/play-item", {
+    method: "POST",
+    body: JSON.stringify({ item_id: itemId }),
+  });
+}
+
+export async function advanceQueue(
+  direction: "next" | "previous",
+): Promise<QueueState> {
+  return request<QueueState>("/api/queue/advance", {
+    method: "POST",
+    body: JSON.stringify({ direction }),
+  });
+}
+
+export async function updateQueueState(input: {
+  current_item_id?: string;
+  is_playing: boolean;
+  position_seconds: number;
+}): Promise<QueueState> {
+  return request<QueueState>("/api/queue/state", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function enqueueQueueTracks(
+  trackIds: string[],
+): Promise<QueueState> {
+  return request<QueueState>("/api/queue/items", {
+    method: "POST",
+    body: JSON.stringify({ track_ids: trackIds }),
+  });
+}
+
+export async function removeQueueItem(itemId: string): Promise<QueueState> {
+  return request<QueueState>(`/api/queue/items/${itemId}`, {
+    method: "DELETE",
+  });
+}
+
+export async function clearQueue(): Promise<QueueState> {
+  return request<QueueState>("/api/queue/clear", {
+    method: "POST",
+  });
+}
+
+export async function refillQueue(): Promise<QueueState> {
+  return request<QueueState>("/api/queue/refill", {
+    method: "POST",
+  });
+}
+
+export async function importQueueTrack(
+  input: QueueImportInput,
+): Promise<QueueState> {
+  return request<QueueState>("/api/queue/import", {
     method: "POST",
     body: JSON.stringify(input),
   });

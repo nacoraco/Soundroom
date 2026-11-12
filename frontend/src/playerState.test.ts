@@ -303,3 +303,77 @@ describe("playerReducer", () => {
     expect(resolved.playToken).toBeGreaterThan(current.playToken);
   });
 });
+
+  it("hydrates the server queue and selects the current item", () => {
+    const queuedFirst = { ...first, queue_item_id: "q-first" };
+    const queuedSecond = { ...second, queue_item_id: "q-second" };
+    const state = playerReducer(
+      {
+        ...initialPlayerState,
+        queue: [queuedFirst],
+        currentIndex: 0,
+        isPlaying: true,
+        currentTime: 42,
+      },
+      {
+        type: "hydrate",
+        tracks: [queuedFirst, queuedSecond],
+        currentQueueItemId: "q-second",
+        isPlaying: true,
+      },
+    );
+
+    expect(state.queue).toEqual([queuedFirst, queuedSecond]);
+    expect(state.currentIndex).toBe(1);
+    expect(state.currentTime).toBe(0);
+    expect(state.isPlaying).toBe(true);
+  });
+
+  it("preserves playback when polling the same current queue item", () => {
+    const queuedFirst = { ...first, queue_item_id: "q-first" };
+    const queuedSecond = { ...second, queue_item_id: "q-second" };
+    const state = playerReducer(
+      {
+        ...initialPlayerState,
+        queue: [queuedFirst],
+        currentIndex: 0,
+        isPlaying: true,
+        currentTime: 42,
+      },
+      {
+        type: "hydrate",
+        tracks: [queuedFirst, queuedSecond],
+        currentQueueItemId: "q-first",
+        isPlaying: false,
+        applyPlayback: false,
+      },
+    );
+
+    expect(state.queue).toEqual([queuedFirst, queuedSecond]);
+    expect(state.currentIndex).toBe(0);
+    expect(state.currentTime).toBe(42);
+    expect(state.isPlaying).toBe(true);
+  });
+
+  it("applies a server stop for the same current item on mutation", () => {
+    const queuedFirst = { ...first, queue_item_id: "q-first" };
+    const state = playerReducer(
+      {
+        ...initialPlayerState,
+        queue: [queuedFirst],
+        currentIndex: 0,
+        isPlaying: true,
+        currentTime: 42,
+      },
+      {
+        type: "hydrate",
+        tracks: [queuedFirst],
+        currentQueueItemId: "q-first",
+        isPlaying: false,
+        applyPlayback: true,
+      },
+    );
+
+    expect(state.currentIndex).toBe(0);
+    expect(state.isPlaying).toBe(false);
+  });

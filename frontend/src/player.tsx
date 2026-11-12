@@ -12,17 +12,22 @@ import {
 } from "react";
 
 import {
-  cancelImportJob,
-  createImportJob,
-  getImportJob,
-  getRadioBatch,
+  advanceQueue as advanceServerQueue,
+  clearQueue as clearServerQueue,
+  enqueueQueueTracks,
+  getQueue,
   getRadioSession,
-  getTrack,
+  importQueueTrack,
+  playQueue,
+  playQueueItem,
   postRadioFeedback,
   postRadioListen,
+  refillQueue,
+  removeQueueItem,
+  updateQueueState,
   updateRadioSession,
 } from "./api";
-import { ACTIVE_IMPORT_STATUSES } from "./importStatus";
+import { useAuth } from "./auth";
 import {
   addNativeMediaSessionListener,
   clearNativeMediaSession,
@@ -35,13 +40,9 @@ import {
   type PlayerTrack,
 } from "./playerState";
 import {
-  MAX_RECOMMENDATION_EXCLUDE,
-  RECOMMENDATION_BATCH_SIZE,
-  RECOMMENDATION_BUFFER_SIZE,
   addRecommendationHistoryEntry,
   createRecommendationHistoryEntry,
   recommendationKey,
-  removeRecommendationHistoryTrack,
   replaceRecommendationHistoryTrack,
   shouldRejectSkippedTrack,
   updateRecommendationProgress,
@@ -52,7 +53,8 @@ import type {
   DiscoveryLevel,
   ImportJobStatus,
   ImportPreviewCandidate,
-  RadioRecommendation,
+  QueueItem,
+  QueueState,
   Track,
 } from "./types";
 
@@ -110,9 +112,46 @@ interface PlayerContextValue {
 
 const PlayerContext = createContext<PlayerContextValue | null>(null);
 
+function queueItemToPlayerTrack(item: QueueItem): PlayerTrack {
+  const origin = item.source === "radio" ? "auto" : "manual";
+  if (item.track) {
+    return {
+      ...item.track,
+      queue_item_id: item.id,
+      origin,
+      recommendation_reason: item.reason,
+      expected_duration_seconds: item.expected_duration_seconds,
+      pending: false,
+      pending_status: item.import_status,
+      import_job_id: item.import_job_id ?? undefined,
+    };
+  }
+  return {
+    id: `queue-pending-${item.id}`,
+    queue_item_id: item.id,
+    title: item.title,
+    artist_name: item.artist,
+    album_title: null,
+    release_year: null,
+    duration_seconds: item.expected_duration_seconds ?? 0,
+    mime_type: "audio/mpeg",
+    source_type: "youtube",
+    is_available: false,
+    recording_key: item.recording_key,
+    created_at: new Date().toISOString(),
+    pending: true,
+    origin,
+    pending_status: item.import_status,
+    pending_error: item.error_message,
+    expected_duration_seconds: item.expected_duration_seconds,
+    source_artist: item.artist,
+    source_title: item.title,
+    recommendation_reason: item.reason,
+  };
+}
+
 export function PlayerProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(playerReducer, initialPlayerState);
-  const [queuedImports, setQueuedImports] = useState<QueuedImport[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const switchingSourceRef = useRef(false);
   const sourceGenerationRef = useRef(0);
@@ -120,40 +159,47 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const interruptedRef = useRef(false);
   const lastPlayTokenRef = useRef(state.playToken);
   const lastNativePositionUpdateRef = useRef(0);
-  const importRequestRef = useRef(0);
-  const aliveRef = useRef(true);
   const [radioExhausted, setRadioExhausted] = useState(false);
-  const [radioFetchTick, setRadioFetchTick] = useState(0);
   const [canUndoSkip, setCanUndoSkip] = useState(false);
   const lastSkippedRef = useRef<PlayerTrack | null>(null);
   const [discoveryLevel, setDiscoveryLevelState] =
     useState<DiscoveryLevel>("balanced");
-  const radioRequestRef = useRef(0);
-  const radioInFlightRef = useRef(false);
-  const radioEmptyRetriesRef = useRef(0);
-  const radioReserveRef = useRef<RadioRecommendation[]>([]);
-  const importStartingRef = useRef<Set<string>>(new Set());
-  const cancelledPendingRef = useRef<Set<string>>(new Set());
-  const radioPendingSequenceRef = useRef(0);
   const recommendationHistoryRef = useRef<RecommendationHistoryEntry[]>([]);
   const recommendationOrderRef = useRef(0);
   const lastActiveTrackIdRef = useRef<string | null>(null);
-  const sessionFailedKeysRef = useRef<Set<string>>(new Set());
   const sessionRejectedKeysRef = useRef<Set<string>>(new Set());
+  const refillInFlightRef = useRef(false);
+  const refillCooldownRef = useRef(0);
+  const lastQueueStatePushRef = useRef(0);
+  const queueMutationRef = useRef(0);
+  const queueMutationSeqRef = useRef(0);
+  const lastAppliedRevisionRef = useRef(-1);
   const stateRef = useRef(state);
   stateRef.current = state;
   const queryClient = useQueryClient();
+  const { data: authData } = useAuth();
+  const signedIn = Boolean(authData?.user);
+  const wasSignedInRef = useRef(false);
+
+  const queueQuery = useQuery({
+    queryKey: ["queue"],
+    queryFn: getQueue,
+    enabled: signedIn,
+    refetchInterval: signedIn ? 2000 : false,
+  });
 
   useEffect(() => {
-    aliveRef.current = true;
-    return () => {
-      aliveRef.current = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    dispatch({ type: "dedupeAuto" });
-  }, [state.queue]);
+    if (signedIn) {
+      wasSignedInRef.current = true;
+      return;
+    }
+    if (!wasSignedInRef.current) {
+      return;
+    }
+    wasSignedInRef.current = false;
+    queryClient.removeQueries({ queryKey: ["queue"] });
+    dispatch({ type: "clear" });
+  }, [queryClient, signedIn]);
 
   useEffect(() => {
     let cancelled = false;
@@ -172,13 +218,146 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  const syncQueueState = useCallback(
+    (queueState: QueueState, applyPlayback = false) => {
+      lastAppliedRevisionRef.current = Math.max(
+        lastAppliedRevisionRef.current,
+        queueState.revision,
+      );
+      queryClient.setQueryData(["queue"], queueState);
+      dispatch({
+        type: "hydrate",
+        tracks: queueState.items.map(queueItemToPlayerTrack),
+        currentQueueItemId: queueState.current_item_id,
+        isPlaying: queueState.is_playing,
+        applyPlayback,
+      });
+      setRadioExhausted(queueState.radio_exhausted);
+    },
+    [queryClient],
+  );
+
+  const beginQueueMutation = useCallback(() => {
+    queueMutationRef.current += 1;
+    queueMutationSeqRef.current += 1;
+    return queueMutationSeqRef.current;
+  }, []);
+
+  const endQueueMutation = useCallback(() => {
+    queueMutationRef.current = Math.max(0, queueMutationRef.current - 1);
+    if (queueMutationRef.current === 0) {
+      void queryClient.invalidateQueries({ queryKey: ["queue"] });
+    }
+  }, [queryClient]);
+
+  const runQueueMutation = useCallback(
+    async (
+      mutation: () => Promise<QueueState>,
+      applyPlayback = false,
+    ) => {
+      const sequence = beginQueueMutation();
+      try {
+        const nextState = await mutation();
+        if (sequence === queueMutationSeqRef.current) {
+          syncQueueState(nextState, applyPlayback);
+        }
+        return nextState;
+      } finally {
+        endQueueMutation();
+      }
+    },
+    [beginQueueMutation, endQueueMutation, syncQueueState],
+  );
+
+  useEffect(() => {
+    if (queueMutationRef.current > 0) {
+      return;
+    }
+    if (
+      queueQuery.data &&
+      queueQuery.data.revision >= lastAppliedRevisionRef.current
+    ) {
+      syncQueueState(queueQuery.data);
+      queryClient.invalidateQueries({
+        queryKey: ["tracks"],
+        refetchType: "none",
+      });
+    }
+  }, [queryClient, queueQuery.data, syncQueueState]);
+
+  useEffect(() => {
+    const queueState = queueQuery.data;
+    if (
+      !queueState ||
+      !queueState.needs_refill ||
+      queueState.radio_exhausted ||
+      refillInFlightRef.current
+    ) {
+      return;
+    }
+    if (Date.now() < refillCooldownRef.current) {
+      return;
+    }
+    refillInFlightRef.current = true;
+    void runQueueMutation(() => refillQueue())
+      .catch(() => {
+        refillCooldownRef.current = Date.now() + 30_000;
+        window.setTimeout(() => {
+          void queryClient.invalidateQueries({ queryKey: ["queue"] });
+        }, 30_000);
+      })
+      .finally(() => {
+        refillInFlightRef.current = false;
+      });
+  }, [
+    queryClient,
+    queueQuery.data?.needs_refill,
+    queueQuery.data?.radio_exhausted,
+    queueQuery.data?.revision,
+    runQueueMutation,
+  ]);
+
+  useEffect(() => {
+    const track = state.queue[state.currentIndex];
+    if (!signedIn || !track || track.pending || !track.queue_item_id) {
+      return;
+    }
+    const now = Date.now();
+    if (now - lastQueueStatePushRef.current < 5000) {
+      return;
+    }
+    lastQueueStatePushRef.current = now;
+    void updateQueueState({
+      current_item_id: track.queue_item_id,
+      is_playing: state.isPlaying,
+      position_seconds: Math.round(state.currentTime),
+    }).catch(() => {
+      // Playback state sync is best-effort.
+    });
+  }, [
+    signedIn,
+    state.currentIndex,
+    state.currentTime,
+    state.isPlaying,
+    state.queue,
+  ]);
+
+  useEffect(() => {
+    const track = state.queue[state.currentIndex];
+    if (!signedIn || !track || track.pending || !track.queue_item_id) {
+      return;
+    }
+    void updateQueueState({
+      current_item_id: track.queue_item_id,
+      is_playing: state.isPlaying,
+      position_seconds: Math.round(state.currentTime),
+    }).catch(() => {
+      // Playback state sync is best-effort.
+    });
+  }, [signedIn, state.isPlaying]);
+
   const resetRecommendationSession = useCallback(
     (track: PlayerTrack | null) => {
-      radioRequestRef.current += 1;
-      radioInFlightRef.current = false;
-      radioEmptyRetriesRef.current = 0;
-      radioReserveRef.current = [];
-      setRadioExhausted(false);
       lastSkippedRef.current = null;
       setCanUndoSkip(false);
       recommendationHistoryRef.current = [];
@@ -225,19 +404,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         : current.duration_seconds,
     );
   }, [captureProgress]);
-
-  const cancelPendingImport = useCallback((track: PlayerTrack) => {
-    if (!track.pending) {
-      return;
-    }
-    cancelledPendingRef.current.add(track.id);
-    if (!track.import_job_id) {
-      return;
-    }
-    void cancelImportJob(track.import_job_id).catch(() => {
-      // The worker may already have finished; nothing else to do.
-    });
-  }, []);
 
   const sendListen = useCallback(
     (track: PlayerTrack, progressSeconds: number, durationSeconds: number) => {
@@ -322,46 +488,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     );
   }, [captureCurrentProgress, sendListen]);
 
-  const removeFailedRecommendation = useCallback(
-    (pendingId: string) => {
-      const snapshot = stateRef.current;
-      const index = snapshot.queue.findIndex(
-        (track) => track.id === pendingId,
-      );
-      if (index === -1) {
-        return;
-      }
-      const track = snapshot.queue[index];
-      if (!track.pending) {
-        return;
-      }
-      const title = track.title.trim();
-      const artist = track.artist_name.trim();
-      const key =
-        track.recording_key || recommendationKey(title, artist);
-      const intentionallyCancelled =
-        cancelledPendingRef.current.delete(pendingId);
-      if (!intentionallyCancelled) {
-        sessionFailedKeysRef.current.add(key);
-        void postRadioFeedback({
-          recording_key: key,
-          title,
-          artist,
-          verdict: "reject",
-          reason: "failed",
-        }).catch(() => {
-          // The local block still prevents the same failed track from returning.
-        });
-      }
-      recommendationHistoryRef.current = removeRecommendationHistoryTrack(
-        recommendationHistoryRef.current,
-        pendingId,
-      );
-      dispatch({ type: "remove", index });
-    },
-    [],
-  );
-
   const rejectTrack = useCallback(
     (track: PlayerTrack, reason: "skip" | "remove" = "skip") => {
       if (track.origin !== "auto") {
@@ -377,6 +503,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       sessionRejectedKeysRef.current.add(key);
       lastSkippedRef.current = track;
       setCanUndoSkip(true);
+      beginQueueMutation();
       void postRadioFeedback({
         recording_key: key,
         track_id: track.pending ? undefined : track.id,
@@ -384,11 +511,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         artist,
         verdict: "reject",
         reason,
-      }).catch(() => {
-        // Keep the local session rejection even if the server is unreachable.
-      });
+      })
+        .then(() => queryClient.invalidateQueries({ queryKey: ["queue"] }))
+        .catch(() => {
+          // Keep the local session rejection even if the server is unreachable.
+        })
+        .finally(endQueueMutation);
     },
-    [],
+    [beginQueueMutation, endQueueMutation, queryClient],
   );
 
   const undoLastSkip = useCallback(() => {
@@ -402,37 +532,27 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       track.recording_key ||
       recommendationKey(track.artist_name, track.title);
     sessionRejectedKeysRef.current.delete(key);
-    cancelledPendingRef.current.delete(track.id);
     void postRadioFeedback({
       recording_key: key,
       track_id: track.pending ? undefined : track.id,
       title: track.title,
       artist: track.artist_name,
       verdict: "clear",
-    }).catch(() => {
-      // The local unblock still applies for this session.
-    });
-    const alreadyQueued = stateRef.current.queue.some(
-      (item) =>
-        (item.recording_key ||
-          recommendationKey(item.artist_name, item.title)) === key,
-    );
-    if (!alreadyQueued) {
-      dispatch({
-        type: "appendAuto",
-        tracks: [
-          {
-            ...track,
-            origin: "auto",
-            import_job_id: undefined,
-            pending_status: null,
-            pending_error: null,
-          },
-        ],
+    })
+      .then(() => {
+        if (!track.pending) {
+          void runQueueMutation(() =>
+            enqueueQueueTracks([track.id]),
+          );
+          return;
+        }
+        void queryClient.invalidateQueries({ queryKey: ["queue"] });
+      })
+      .catch(() => {
+        // The local unblock still applies for this session.
       });
-    }
     setRadioExhausted(false);
-  }, []);
+  }, [queryClient, runQueueMutation]);
 
   const dismissRecommendation = useCallback(
     (track: PlayerTrack, mode: "not_now" | "never") => {
@@ -443,6 +563,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         track.recording_key ||
         recommendationKey(track.artist_name, track.title);
       sessionRejectedKeysRef.current.add(key);
+      beginQueueMutation();
       void postRadioFeedback({
         recording_key: key,
         track_id: track.pending ? undefined : track.id,
@@ -450,20 +571,21 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         artist: track.artist_name,
         verdict: "reject",
         reason: mode,
-      }).catch(() => {
-        // The local block still applies even if the server is unreachable.
-      });
+      })
+        .then(() => queryClient.invalidateQueries({ queryKey: ["queue"] }))
+        .catch(() => {
+          // The local block still applies even if the server is unreachable.
+        })
+        .finally(endQueueMutation);
       const snapshot = stateRef.current;
-      const index = snapshot.queue.findIndex((item) => item.id === track.id);
-      if (index === -1) {
-        return;
+      const index = snapshot.queue.findIndex(
+        (item) => item.queue_item_id === track.queue_item_id,
+      );
+      if (index !== -1) {
+        dispatch({ type: "remove", index });
       }
-      if (track.pending) {
-        cancelPendingImport(track);
-      }
-      dispatch({ type: "remove", index });
     },
-    [cancelPendingImport],
+    [beginQueueMutation, endQueueMutation, queryClient],
   );
 
   const currentTrack = state.queue[state.currentIndex] ?? null;
@@ -472,705 +594,158 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     currentTrack && !currentTrack.pending
       ? `/api/tracks/${currentTrack.id}/stream`
       : null;
-  const pendingJobId = currentTrack?.pending
-    ? (currentTrack.import_job_id ?? null)
-    : null;
-
-  const importJobQuery = useQuery({
-    queryKey: ["player-import-job", pendingJobId],
-    queryFn: () => getImportJob(pendingJobId as string),
-    enabled: Boolean(pendingJobId),
-    refetchInterval: (queryState) => {
-      const status = queryState.state.data?.status;
-      return status && ACTIVE_IMPORT_STATUSES.includes(status) ? 2000 : false;
-    },
-  });
-
-  const completedTrackId =
-    importJobQuery.data?.status === "completed"
-      ? importJobQuery.data.track_id
-      : null;
-
-  const completedTrackQuery = useQuery({
-    queryKey: ["track", completedTrackId],
-    queryFn: () => getTrack(completedTrackId as string),
-    enabled: Boolean(completedTrackId) && Boolean(pendingJobId),
-  });
-
-  useEffect(() => {
-    if (!pendingJobId || !importJobQuery.data) {
-      return;
-    }
-    dispatch({
-      type: "importStatus",
-      status: importJobQuery.data.status,
-    });
-    if (
-      importJobQuery.data.status === "failed" ||
-      importJobQuery.data.status === "cancelled"
-    ) {
-      dispatch({
-        type: "importFailed",
-        error:
-          importJobQuery.data.error_message ??
-          "The external release could not be imported.",
-      });
-    }
-    if (
-      importJobQuery.data.status === "completed" &&
-      !importJobQuery.data.track_id
-    ) {
-      dispatch({
-        type: "importFailed",
-        error: "The imported recording could not be located.",
-      });
-    }
-  }, [importJobQuery.data, pendingJobId]);
-
-  useEffect(() => {
-    if (!completedTrackQuery.data || !pendingJobId) {
-      return;
-    }
-    dispatch({ type: "importCompleted", track: completedTrackQuery.data });
-    queryClient.invalidateQueries({ queryKey: ["tracks"], refetchType: "none" });
-  }, [completedTrackQuery.data, pendingJobId, queryClient]);
-
-  useEffect(() => {
-    if (completedTrackQuery.isError && pendingJobId) {
-      dispatch({
-        type: "importFailed",
-        error: "The imported recording could not be loaded.",
-      });
-    }
-  }, [completedTrackQuery.isError, pendingJobId]);
-
-  const startPendingQueryImport = useCallback(
-    async (
-      pendingId: string,
-      title: string,
-      artist: string,
-      options?: {
-        expectedDurationSeconds?: number | null;
-        recordingKey?: string;
-      },
-    ) => {
-      try {
-        const job = await createImportJob(
-          `${artist} ${title}`.trim(),
-          undefined,
-          {
-            forceLlmApproval: true,
-            sourceArtist: artist,
-            sourceTitle: title,
-            expectedDurationSeconds:
-              options?.expectedDurationSeconds ?? undefined,
-            recordingKey: options?.recordingKey,
-          },
-        );
-        if (!aliveRef.current) {
-          return;
-        }
-        dispatch({
-          type: "setPendingJob",
-          pendingId,
-          jobId: job.id,
-          status: job.status,
-        });
-
-        async function poll() {
-          while (aliveRef.current) {
-            let current;
-            try {
-              current = await getImportJob(job.id);
-            } catch (error) {
-              if (aliveRef.current) {
-                dispatch({
-                  type: "setPendingState",
-                  pendingId,
-                  status: "failed",
-                  error:
-                    error instanceof Error
-                      ? error.message
-                      : "The import status could not be loaded.",
-                });
-                removeFailedRecommendation(pendingId);
-              }
-              return;
-            }
-            if (!aliveRef.current) {
-              return;
-            }
-            dispatch({
-              type: "setPendingState",
-              pendingId,
-              status: current.status,
-              error:
-                current.status === "failed"
-                  ? (current.error_message ?? "The import failed.")
-                  : current.status === "cancelled"
-                    ? "The import was cancelled."
-                    : null,
-            });
-
-            if (current.status === "completed") {
-              if (!current.track_id) {
-                dispatch({
-                  type: "setPendingState",
-                  pendingId,
-                  status: "failed",
-                  error: "The imported recording could not be located.",
-                });
-                removeFailedRecommendation(pendingId);
-                return;
-              }
-              try {
-                const track = await getTrack(current.track_id);
-                if (!aliveRef.current) {
-                  return;
-                }
-                dispatch({ type: "replacePending", pendingId, track });
-                queryClient.invalidateQueries({ queryKey: ["tracks"], refetchType: "none" });
-              } catch (error) {
-                dispatch({
-                  type: "setPendingState",
-                  pendingId,
-                  status: "failed",
-                  error:
-                    error instanceof Error
-                      ? error.message
-                      : "The imported recording could not be loaded.",
-                });
-                removeFailedRecommendation(pendingId);
-              }
-              return;
-            }
-
-            if (
-              current.status === "failed" ||
-              current.status === "cancelled"
-            ) {
-              if (current.status === "cancelled") {
-                cancelledPendingRef.current.add(pendingId);
-              }
-              removeFailedRecommendation(pendingId);
-              return;
-            }
-
-            await new Promise((resolve) =>
-              window.setTimeout(resolve, 2000),
-            );
-          }
-        }
-
-        void poll();
-      } catch (error) {
-        if (aliveRef.current) {
-          dispatch({
-            type: "setPendingState",
-            pendingId,
-            status: "failed",
-            error:
-              error instanceof Error
-                ? error.message
-                : "The import could not be requested.",
-          });
-          removeFailedRecommendation(pendingId);
-        }
-      }
-    },
-    [queryClient, removeFailedRecommendation],
-  );
-
-  const ensureNextAutoImport = useCallback(() => {
-    const snapshot = stateRef.current;
-    const ahead = snapshot.queue
-      .slice(snapshot.currentIndex + 1)
-      .filter((track) => track.origin === "auto");
-    const hasActiveImport = ahead.some(
-      (track) =>
-        track.pending &&
-        (Boolean(track.import_job_id) ||
-          Boolean(
-            track.pending_status &&
-              ACTIVE_IMPORT_STATUSES.includes(track.pending_status),
-          )),
-    );
-    if (hasActiveImport) {
-      return;
-    }
-    const next = ahead.find(
-      (track) =>
-        track.pending && !track.import_job_id && !track.pending_error,
-    );
-    if (!next || importStartingRef.current.has(next.id)) {
-      return;
-    }
-    importStartingRef.current.add(next.id);
-    void startPendingQueryImport(
-      next.id,
-      next.title,
-      next.artist_name,
-      {
-        expectedDurationSeconds: next.expected_duration_seconds,
-        recordingKey: next.recording_key,
-      },
-    ).finally(() => {
-      importStartingRef.current.delete(next.id);
-    });
-  }, [startPendingQueryImport]);
-
-  const fillRadioBuffer = useCallback(() => {
-    const snapshot = stateRef.current;
-    let autoAhead = snapshot.queue
-      .slice(snapshot.currentIndex + 1)
-      .filter((track) => track.origin === "auto").length;
-    if (autoAhead >= RECOMMENDATION_BUFFER_SIZE) {
-      ensureNextAutoImport();
-      return;
-    }
-
-    const occupied = new Set<string>([
-      ...snapshot.queue.map(
-        (track) =>
-          track.recording_key ||
-          recommendationKey(track.artist_name, track.title),
-      ),
-      ...recommendationHistoryRef.current.map(
-        (entry) =>
-          entry.track.recording_key ||
-          recommendationKey(entry.track.artist_name, entry.track.title),
-      ),
-      ...sessionRejectedKeysRef.current,
-      ...sessionFailedKeysRef.current,
-    ]);
-    const existingIds = new Set(
-      snapshot.queue.map((track) => track.id),
-    );
-    const appended: PlayerTrack[] = [];
-
-    while (
-      autoAhead < RECOMMENDATION_BUFFER_SIZE &&
-      radioReserveRef.current.length > 0
-    ) {
-      const recommendation = radioReserveRef.current.shift();
-      if (!recommendation) {
-        break;
-      }
-      const key =
-        recommendation.recording_key ||
-        recommendationKey(recommendation.artist, recommendation.title);
-      if (
-        !key ||
-        occupied.has(key) ||
-        sessionRejectedKeysRef.current.has(key) ||
-        sessionFailedKeysRef.current.has(key)
-      ) {
-        continue;
-      }
-      occupied.add(key);
-
-      if (recommendation.local_track) {
-        if (existingIds.has(recommendation.local_track.id)) {
-          continue;
-        }
-        appended.push({
-          ...recommendation.local_track,
-          origin: "auto",
-          recommendation_reason: recommendation.reason,
-        });
-      } else {
-        appended.push({
-          id: `auto-import-${Date.now()}-${radioPendingSequenceRef.current++}`,
-          title: recommendation.title,
-          artist_name: recommendation.artist,
-          album_title: null,
-          release_year: null,
-          duration_seconds:
-            recommendation.expected_duration_seconds ?? 0,
-          mime_type: "audio/mpeg",
-          source_type: "youtube",
-          is_available: false,
-          recording_key: key,
-          created_at: new Date().toISOString(),
-          pending: true,
-          origin: "auto",
-          pending_status: null,
-          pending_error: null,
-          expected_duration_seconds:
-            recommendation.expected_duration_seconds,
-          source_artist: recommendation.artist,
-          source_title: recommendation.title,
-          recommendation_reason: recommendation.reason,
-        });
-      }
-      autoAhead += 1;
-    }
-
-    if (appended.length > 0) {
-      dispatch({ type: "appendAuto", tracks: appended });
-    } else if (radioReserveRef.current.length === 0) {
-      setRadioFetchTick((value) => value + 1);
-    }
-    ensureNextAutoImport();
-  }, [ensureNextAutoImport]);
-
-  const fetchRadioBatch = useCallback(
-    async (requestId: number) => {
-      const snapshot = stateRef.current;
-      const exclude = Array.from(
-        new Set<string>([
-          ...snapshot.queue.map(
-            (track) =>
-              track.recording_key ||
-              recommendationKey(track.artist_name, track.title),
-          ),
-          ...recommendationHistoryRef.current.map(
-            (entry) =>
-              entry.track.recording_key ||
-              recommendationKey(entry.track.artist_name, entry.track.title),
-          ),
-          ...sessionRejectedKeysRef.current,
-          ...sessionFailedKeysRef.current,
-        ]),
-      )
-        .filter(Boolean)
-        .slice(0, MAX_RECOMMENDATION_EXCLUDE);
-
-      const current = snapshot.queue[snapshot.currentIndex];
-      const seedTrackId =
-        current && !current.pending && current.origin !== "auto"
-          ? current.id
-          : undefined;
-
-      try {
-        const result = await getRadioBatch({
-          limit: RECOMMENDATION_BATCH_SIZE,
-          exclude,
-          seedTrackId,
-        });
-        if (
-          !aliveRef.current ||
-          requestId !== radioRequestRef.current
-        ) {
-          return;
-        }
-
-        const queueSnapshot = stateRef.current;
-        const existingIds = new Set(
-          queueSnapshot.queue.map((track) => track.id),
-        );
-        const blocked = new Set(exclude);
-        const reserve = result.recommendations.filter((recommendation) => {
-          const key =
-            recommendation.recording_key ||
-            recommendationKey(
-              recommendation.artist,
-              recommendation.title,
-            );
-          if (!key || blocked.has(key)) {
-            return false;
-          }
-          if (
-            recommendation.local_track &&
-            existingIds.has(recommendation.local_track.id)
-          ) {
-            return false;
-          }
-          return true;
-        });
-        if (
-          reserve.length === 0 &&
-          !result.exhausted &&
-          result.recommendations.length > 0 &&
-          radioEmptyRetriesRef.current < 2
-        ) {
-          radioEmptyRetriesRef.current += 1;
-          setRadioExhausted(false);
-          setRadioFetchTick((value) => value + 1);
-          return;
-        }
-        radioEmptyRetriesRef.current = 0;
-        radioReserveRef.current = reserve;
-        setRadioExhausted(result.exhausted && reserve.length === 0);
-        fillRadioBuffer();
-      } catch {
-        // Playback and the existing queue stay usable when Last.fm is down.
-      }
-    },
-    [fillRadioBuffer],
-  );
-
   const playTrack = useCallback(
-    (track: Track, queue?: Track[]) => {
+    (track: Track, queueTracks?: Track[]) => {
       flushCurrentListen();
       forgiveRecommendation(track);
+      const tracks =
+        queueTracks && queueTracks.length > 0
+          ? queueTracks
+          : [track];
       resetRecommendationSession(track);
-      dispatch({ type: "play", track, queue });
-      void updateRadioSession({ seed_track_id: track.id }).catch(() => {
-        // The next batch can still use recent listening history.
+      dispatch({ type: "play", track, queue: tracks });
+      void runQueueMutation(
+        () =>
+          playQueue({
+            track_ids: tracks.map((item) => item.id),
+            start_track_id: track.id,
+          }),
+        true,
+      ).catch(() => {
+        // Keep the optimistic local queue if the server is unreachable.
       });
     },
-    [flushCurrentListen, forgiveRecommendation, resetRecommendationSession],
+    [
+      flushCurrentListen,
+      forgiveRecommendation,
+      resetRecommendationSession,
+      runQueueMutation,
+    ],
   );
 
   const startImport = useCallback(
     async (query: string, candidate: ImportPreviewCandidate) => {
-      if (candidate.duration_seconds === null) {
+      const duration = candidate.duration_seconds;
+      if (duration === null) {
         return;
       }
-      const requestId = importRequestRef.current + 1;
-      importRequestRef.current = requestId;
-      const pendingTrack: PlayerTrack = {
-        id: `import-${candidate.video_id}`,
-        title: candidate.title,
-        artist_name: candidate.artist,
-        album_title: null,
-        release_year: null,
-        duration_seconds: candidate.duration_seconds,
-        mime_type: "audio/mpeg",
-        source_type: "youtube",
-        is_available: false,
-        recording_key: recommendationKey(
-          candidate.artist,
-          candidate.title,
-        ),
-        created_at: new Date().toISOString(),
-        pending: true,
-        thumbnail_url: candidate.thumbnail_url,
-      };
-      flushCurrentListen();
-      resetRecommendationSession(pendingTrack);
-      dispatch({ type: "beginImport", track: pendingTrack });
       try {
-        const job = await createImportJob(query, {
-          video_id: candidate.video_id,
-          title: candidate.title,
-          artist: candidate.artist,
-          duration_seconds: candidate.duration_seconds,
-        });
-        if (importRequestRef.current !== requestId) {
-          return;
-        }
-        dispatch({ type: "importJob", jobId: job.id, status: job.status });
-      } catch (error) {
-        if (importRequestRef.current !== requestId) {
-          return;
-        }
-        dispatch({
-          type: "importFailed",
-          error:
-            error instanceof Error
-              ? error.message
-              : "The import could not be requested.",
-        });
+        await runQueueMutation(
+          () =>
+            importQueueTrack({
+              query,
+              candidate: {
+                video_id: candidate.video_id,
+                title: candidate.title,
+                artist: candidate.artist,
+                duration_seconds: duration,
+              },
+              play_now: true,
+              source_artist: candidate.artist,
+              source_title: candidate.title,
+              expected_duration_seconds: duration,
+            }),
+          true,
+        );
+      } catch {
+        // The import request failed; leave the queue unchanged.
       }
     },
-    [flushCurrentListen, resetRecommendationSession],
+    [runQueueMutation],
   );
 
   const queueImport = useCallback(
     async (query: string, candidate: ImportPreviewCandidate) => {
-      if (candidate.duration_seconds === null) {
+      const duration = candidate.duration_seconds;
+      if (duration === null) {
         return false;
       }
-      const isActive = (entry: QueuedImport) =>
-        entry.status === null ||
-        ACTIVE_IMPORT_STATUSES.includes(entry.status);
-      if (
-        queuedImports.some(
-          (entry) =>
-            entry.videoId === candidate.video_id && isActive(entry),
-        )
-      ) {
-        return false;
-      }
-
-      const localId = `queue-${candidate.video_id}-${Date.now()}`;
-      const entry: QueuedImport = {
-        id: localId,
-        videoId: candidate.video_id,
-        jobId: null,
-        title: candidate.title,
-        artist: candidate.artist,
-        thumbnailUrl: candidate.thumbnail_url,
-        status: null,
-        error: null,
-      };
-      setQueuedImports((current) => [
-        ...current.filter((item) => item.videoId !== candidate.video_id),
-        entry,
-      ]);
-
-      const updateEntry = (
-        updater: (current: QueuedImport) => QueuedImport,
-      ) => {
-        setQueuedImports((current) =>
-          current.map((item) => (item.id === localId ? updater(item) : item)),
-        );
-      };
-
-      async function poll(localId: string, jobId: string) {
-        while (aliveRef.current) {
-          let job;
-          try {
-            job = await getImportJob(jobId);
-          } catch (error) {
-            if (!aliveRef.current) {
-              return;
-            }
-            updateEntry((current) => ({
-              ...current,
-              status: "failed",
-              error:
-                error instanceof Error
-                  ? error.message
-                  : "The import status could not be loaded.",
-            }));
-            return;
-          }
-          if (!aliveRef.current) {
-            return;
-          }
-          updateEntry((current) => ({
-            ...current,
-            status: job.status,
-            error:
-              job.status === "failed"
-                ? (job.error_message ?? "The import failed.")
-                : job.status === "cancelled"
-                  ? "The import was cancelled."
-                  : null,
-          }));
-
-          if (job.status === "completed") {
-            if (!job.track_id) {
-              updateEntry((current) => ({
-                ...current,
-                status: "failed",
-                error: "The imported recording could not be located.",
-              }));
-              return;
-            }
-            try {
-              const track = await getTrack(job.track_id);
-              if (!aliveRef.current) {
-                return;
-              }
-              dispatch({ type: "enqueue", track });
-              setQueuedImports((current) =>
-                current.filter((item) => item.id !== localId),
-              );
-              queryClient.invalidateQueries({ queryKey: ["tracks"], refetchType: "none" });
-            } catch (error) {
-              updateEntry((current) => ({
-                ...current,
-                status: "failed",
-                error:
-                  error instanceof Error
-                    ? error.message
-                    : "The imported recording could not be loaded.",
-              }));
-            }
-            return;
-          }
-
-          if (job.status === "failed" || job.status === "cancelled") {
-            return;
-          }
-
-          await new Promise((resolve) =>
-            window.setTimeout(resolve, 2000),
-          );
-        }
-      }
-
       try {
-        const job = await createImportJob(query, {
-          video_id: candidate.video_id,
-          title: candidate.title,
-          artist: candidate.artist,
-          duration_seconds: candidate.duration_seconds,
-        });
-        if (!aliveRef.current) {
-          return false;
-        }
-        updateEntry((current) => ({
-          ...current,
-          jobId: job.id,
-          status: job.status,
-        }));
-        void poll(localId, job.id);
+        await runQueueMutation(() =>
+          importQueueTrack({
+            query,
+            candidate: {
+              video_id: candidate.video_id,
+              title: candidate.title,
+              artist: candidate.artist,
+              duration_seconds: duration,
+            },
+            play_now: false,
+            source_artist: candidate.artist,
+            source_title: candidate.title,
+            expected_duration_seconds: duration,
+          }),
+        );
         return true;
-      } catch (error) {
-        if (aliveRef.current) {
-          updateEntry((current) => ({
-            ...current,
-            status: "failed",
-            error:
-              error instanceof Error
-                ? error.message
-                : "The import could not be requested.",
-          }));
-        }
+      } catch {
         return false;
       }
     },
-    [queryClient, queuedImports],
+    [runQueueMutation],
   );
 
-  const dismissQueuedImport = useCallback((id: string) => {
-    setQueuedImports((current) => current.filter((item) => item.id !== id));
-  }, []);
+  const queuedImports = useMemo<QueuedImport[]>(
+    () =>
+      (queueQuery.data?.items ?? [])
+        .filter((item) => item.video_id && item.status !== "ready")
+        .map((item) => ({
+          id: item.id,
+          videoId: item.video_id as string,
+          jobId: item.import_job_id,
+          title: item.title,
+          artist: item.artist,
+          thumbnailUrl: null,
+          status: item.import_status,
+          error: item.error_message,
+        })),
+    [queueQuery.data],
+  );
+
+  const dismissQueuedImport = useCallback(
+    (id: string) => {
+      const item = queueQuery.data?.items.find((entry) => entry.id === id);
+      if (!item) {
+        return;
+      }
+      void runQueueMutation(() => removeQueueItem(item.id)).catch(() => {
+        // The queue poll will reconcile.
+      });
+    },
+    [queueQuery.data, runQueueMutation],
+  );
 
   const enqueue = useCallback(
     (track: Track) => {
-      if (state.queue.some((queued) => queued.id === track.id)) {
+      if (stateRef.current.queue.some((item) => item.id === track.id)) {
         return false;
       }
       dispatch({ type: "enqueue", track });
+      void runQueueMutation(() =>
+        enqueueQueueTracks([track.id]),
+      ).catch(() => {
+        // Keep the optimistic queue if the server is unreachable.
+      });
       return true;
     },
-    [state.queue],
+    [runQueueMutation],
   );
 
   const queueExternalRecommendation = useCallback(
     async (recommendation: DiscoverRecommendation) => {
-      if (recommendation.local_track) {
-        enqueue(recommendation.local_track);
-        return;
+      try {
+        await runQueueMutation(() =>
+          importQueueTrack({
+            query: `${recommendation.artist} ${recommendation.title}`.trim(),
+            play_now: false,
+            source_artist: recommendation.artist,
+            source_title: recommendation.title,
+          }),
+        );
+      } catch {
+        // The recommendation stays in Discover if the import fails.
       }
-      const pendingId = `discover-import-${Date.now()}`;
-      dispatch({
-        type: "enqueue",
-        track: {
-          id: pendingId,
-          title: recommendation.title,
-          artist_name: recommendation.artist,
-          album_title: null,
-          release_year: null,
-          duration_seconds: 0,
-          mime_type: "audio/mpeg",
-          source_type: "youtube",
-          is_available: false,
-          recording_key: recommendationKey(
-            recommendation.artist,
-            recommendation.title,
-          ),
-          source_artist: recommendation.artist,
-          source_title: recommendation.title,
-          created_at: new Date().toISOString(),
-          pending: true,
-          pending_status: null,
-          pending_error: null,
-        },
-      });
-      void startPendingQueryImport(
-        pendingId,
-        recommendation.title,
-        recommendation.artist,
-      );
     },
-    [enqueue, startPendingQueryImport],
+    [runQueueMutation],
   );
 
   const toggle = useCallback(() => {
@@ -1183,32 +758,24 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const next = useCallback(() => {
     const snapshot = stateRef.current;
     const current = snapshot.queue[snapshot.currentIndex];
-    if (current?.pending && current.pending_status === "failed") {
-      removeFailedRecommendation(current.id);
+    if (!current) {
       return;
     }
     captureCurrentProgress();
-    if (
-      current &&
-      shouldRejectSkippedTrack(current, recommendationHistoryRef.current)
-    ) {
-      rejectTrack(current);
-    }
-    const failedAheadIndex = snapshot.queue.findIndex(
-      (track, index) =>
-        index > snapshot.currentIndex &&
-        track.pending &&
-        track.pending_status === "failed",
-    );
-    if (failedAheadIndex !== -1) {
-      removeFailedRecommendation(
-        snapshot.queue[failedAheadIndex].id,
-      );
-      dispatch({ type: "next" });
+    const shouldReject =
+      current.origin === "auto" &&
+      shouldRejectSkippedTrack(current, recommendationHistoryRef.current);
+    dispatch({ type: "next" });
+    if (shouldReject) {
+      rejectTrack(current, "skip");
       return;
     }
-    dispatch({ type: "next" });
-  }, [captureCurrentProgress, rejectTrack, removeFailedRecommendation]);
+    void runQueueMutation(() => advanceServerQueue("next"), true).catch(
+      () => {
+        // The queue poll will reconcile.
+      },
+    );
+  }, [captureCurrentProgress, rejectTrack, runQueueMutation]);
 
   const seek = useCallback((time: number) => {
     const audio = audioRef.current;
@@ -1219,13 +786,19 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const previous = useCallback(() => {
-    if (state.currentIndex <= 0 || state.currentTime > 3) {
+    if (state.currentTime > 3) {
       seek(0);
       return;
     }
     captureCurrentProgress();
     dispatch({ type: "previous" });
-  }, [captureCurrentProgress, seek, state.currentIndex, state.currentTime]);
+    void runQueueMutation(
+      () => advanceServerQueue("previous"),
+      true,
+    ).catch(() => {
+      // The queue poll will reconcile.
+    });
+  }, [captureCurrentProgress, runQueueMutation, seek, state.currentTime]);
 
   const playAt = useCallback(
     (index: number) => {
@@ -1235,90 +808,93 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       }
       captureCurrentProgress();
       dispatch({ type: "playAt", index });
+      if (target?.queue_item_id) {
+        void runQueueMutation(
+          () => playQueueItem(target.queue_item_id as string),
+          true,
+        ).catch(() => {
+          // The queue poll will reconcile.
+        });
+      }
     },
-    [captureCurrentProgress, forgiveRecommendation],
+    [captureCurrentProgress, forgiveRecommendation, runQueueMutation],
   );
 
   const removeAt = useCallback(
     (index: number) => {
       const snapshot = stateRef.current;
       const track = snapshot.queue[index];
-      if (track?.pending && track.pending_status === "failed") {
-        removeFailedRecommendation(track.id);
-        return;
-      }
       const isCurrent = index === snapshot.currentIndex;
       captureCurrentProgress();
-      if (isCurrent) {
-        if (
-          track &&
-          shouldRejectSkippedTrack(track, recommendationHistoryRef.current)
-        ) {
-          rejectTrack(track, "skip");
-        }
-      } else if (track?.pending) {
-        cancelPendingImport(track);
-      }
+      const shouldReject =
+        isCurrent &&
+        track !== undefined &&
+        track.origin === "auto" &&
+        shouldRejectSkippedTrack(
+          track,
+          recommendationHistoryRef.current,
+        );
       dispatch({ type: "remove", index });
+      if (shouldReject && track) {
+        rejectTrack(track, "skip");
+        return;
+      }
+      if (track?.queue_item_id) {
+        void runQueueMutation(
+          () => removeQueueItem(track.queue_item_id as string),
+          true,
+        ).catch(() => {
+          // The queue poll will reconcile.
+        });
+      }
     },
-    [
-      cancelPendingImport,
-      captureCurrentProgress,
-      rejectTrack,
-      removeFailedRecommendation,
-    ],
+    [captureCurrentProgress, rejectTrack, runQueueMutation],
   );
 
   const removeTrack = useCallback(
     (trackId: string) => {
       const snapshot = stateRef.current;
-      const index = snapshot.queue.findIndex((track) => track.id === trackId);
+      const index = snapshot.queue.findIndex(
+        (track) =>
+          track.id === trackId || track.queue_item_id === trackId,
+      );
       if (index !== -1) {
         const track = snapshot.queue[index];
-        if (track.pending && track.pending_status === "failed") {
-          removeFailedRecommendation(trackId);
-          return;
-        }
         const isCurrent = index === snapshot.currentIndex;
         captureCurrentProgress();
-        if (isCurrent) {
-          if (
-            shouldRejectSkippedTrack(
-              track,
-              recommendationHistoryRef.current,
-            )
-          ) {
-            rejectTrack(track, "skip");
-          }
-        } else if (track.pending) {
-          cancelPendingImport(track);
-        }
+        const shouldReject =
+          isCurrent &&
+          track.origin === "auto" &&
+          shouldRejectSkippedTrack(
+            track,
+            recommendationHistoryRef.current,
+          );
         dispatch({ type: "remove", index });
+        if (shouldReject) {
+          rejectTrack(track, "skip");
+          return;
+        }
+        if (track.queue_item_id) {
+          void runQueueMutation(
+            () => removeQueueItem(track.queue_item_id as string),
+            true,
+          ).catch(() => {
+            // The queue poll will reconcile.
+          });
+        }
       }
     },
-    [
-      cancelPendingImport,
-      captureCurrentProgress,
-      rejectTrack,
-      removeFailedRecommendation,
-    ],
+    [captureCurrentProgress, rejectTrack, runQueueMutation],
   );
 
   const clearQueue = useCallback(() => {
     flushCurrentListen();
-    const snapshot = stateRef.current;
-    for (const track of snapshot.queue) {
-      if (track.pending) {
-        cancelPendingImport(track);
-      }
-    }
     resetRecommendationSession(null);
     dispatch({ type: "clear" });
-  }, [
-    cancelPendingImport,
-    flushCurrentListen,
-    resetRecommendationSession,
-  ]);
+    void runQueueMutation(() => clearServerQueue(), true).catch(() => {
+      // The queue poll will reconcile.
+    });
+  }, [flushCurrentListen, resetRecommendationSession, runQueueMutation]);
 
   const setExpanded = useCallback((expanded: boolean) => {
     dispatch({ type: "expanded", expanded });
@@ -1336,16 +912,20 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     dispatch({ type: "error", error: null });
   }, []);
 
-  const setDiscoveryLevel = useCallback((level: DiscoveryLevel) => {
-    setDiscoveryLevelState(level);
-    setRadioExhausted(false);
-    radioRequestRef.current += 1;
-    radioEmptyRetriesRef.current = 0;
-    radioReserveRef.current = [];
-    void updateRadioSession({ discovery_level: level }).catch(() => {
-      // The next successful request will persist the chosen level.
-    });
-  }, []);
+  const setDiscoveryLevel = useCallback(
+    (level: DiscoveryLevel) => {
+      setDiscoveryLevelState(level);
+      setRadioExhausted(false);
+      void updateRadioSession({ discovery_level: level })
+        .then(() =>
+          queryClient.invalidateQueries({ queryKey: ["queue"] }),
+        )
+        .catch(() => {
+          // The next successful request will persist the chosen level.
+        });
+    },
+    [queryClient],
+  );
 
   const requestPlay = useCallback((audio: HTMLAudioElement) => {
     const generation = sourceGenerationRef.current;
@@ -1491,6 +1071,29 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       window.removeEventListener("focus", syncPlaybackWithAudio);
       window.removeEventListener("pageshow", syncPlaybackWithAudio);
     };
+  }, [requestPlay]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      const audio = audioRef.current;
+      const snapshot = stateRef.current;
+      if (
+        !audio ||
+        !audio.src ||
+        audio.ended ||
+        switchingSourceRef.current ||
+        userPausedRef.current
+      ) {
+        return;
+      }
+      if (
+        audio.paused &&
+        (snapshot.isPlaying || interruptedRef.current)
+      ) {
+        requestPlay(audio);
+      }
+    }, 5000);
+    return () => window.clearInterval(interval);
   }, [requestPlay]);
 
   useEffect(() => {
@@ -1800,53 +1403,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     );
   }, [currentTrack, state.currentTime, state.duration]);
 
-  useEffect(() => {
-    ensureNextAutoImport();
-  }, [currentTrack, ensureNextAutoImport, state.currentIndex, state.queue]);
-
-  useEffect(() => {
-    if (
-      radioInFlightRef.current ||
-      radioExhausted ||
-      !currentTrack ||
-      currentTrack.pending
-    ) {
-      return;
-    }
-
-    const snapshot = stateRef.current;
-    const autoAhead = snapshot.queue
-      .slice(snapshot.currentIndex + 1)
-      .filter((track) => track.origin === "auto").length;
-    if (autoAhead >= RECOMMENDATION_BUFFER_SIZE) {
-      return;
-    }
-    if (
-      radioReserveRef.current.length + autoAhead >
-      RECOMMENDATION_BUFFER_SIZE
-    ) {
-      fillRadioBuffer();
-      return;
-    }
-
-    const requestId = radioRequestRef.current;
-    radioInFlightRef.current = true;
-    void fetchRadioBatch(requestId).finally(() => {
-      if (requestId === radioRequestRef.current) {
-        radioInFlightRef.current = false;
-      }
-    });
-  }, [
-    currentTrack,
-    discoveryLevel,
-    fetchRadioBatch,
-    fillRadioBuffer,
-    radioExhausted,
-    radioFetchTick,
-    state.currentIndex,
-    state.queue,
-  ]);
-
   const value = useMemo<PlayerContextValue>(
     () => ({
       state,
@@ -1996,6 +1552,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
             startSource(nextTrack);
           }
           dispatch({ type: "ended" });
+          void runQueueMutation(
+            () => advanceServerQueue("next"),
+            true,
+          ).catch(() => {
+            // The queue poll will reconcile.
+          });
         }}
         onError={() => {
           switchingSourceRef.current = false;

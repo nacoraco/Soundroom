@@ -2,6 +2,7 @@ import { recommendationKey } from "./recommendationSession";
 import type { ImportJobStatus, Track } from "./types";
 
 export interface PlayerTrack extends Track {
+  queue_item_id?: string;
   pending?: boolean;
   import_job_id?: string;
   pending_status?: ImportJobStatus | null;
@@ -32,6 +33,13 @@ export interface PlayerState {
 export type PlayerAction =
   | { type: "play"; track: PlayerTrack; queue?: PlayerTrack[] }
   | { type: "playAt"; index: number }
+  | {
+      type: "hydrate";
+      tracks: PlayerTrack[];
+      currentQueueItemId: string | null;
+      isPlaying: boolean;
+      applyPlayback?: boolean;
+    }
   | { type: "enqueue"; track: PlayerTrack }
   | { type: "appendAuto"; tracks: PlayerTrack[] }
   | { type: "dedupeAuto" }
@@ -159,6 +167,49 @@ export function playerReducer(
         playToken: state.playToken + 1,
         importStatus: null,
         importError: null,
+      };
+    }
+
+    case "hydrate": {
+      const queue = action.tracks;
+      const index = action.currentQueueItemId
+        ? queue.findIndex(
+            (track) => track.queue_item_id === action.currentQueueItemId,
+          )
+        : -1;
+      const current = index >= 0 ? queue[index] : null;
+      const previous = state.queue[state.currentIndex];
+      const sameCurrent =
+        current !== null &&
+        previous !== undefined &&
+        (current.queue_item_id === previous.queue_item_id ||
+          (previous.queue_item_id === undefined &&
+            current.id === previous.id));
+      if (sameCurrent) {
+        return {
+          ...state,
+          queue,
+          currentIndex: index,
+          duration:
+            state.duration > 0
+              ? state.duration
+              : durationFor(current, current.duration_seconds),
+          isPlaying: action.applyPlayback
+            ? action.isPlaying
+            : state.isPlaying,
+        };
+      }
+      return {
+        ...state,
+        queue,
+        currentIndex: index,
+        currentTime: 0,
+        duration: current
+          ? durationFor(current, current.duration_seconds)
+          : 0,
+        isPlaying: Boolean(current) && action.isPlaying,
+        playToken: current ? state.playToken + 1 : state.playToken,
+        error: null,
       };
     }
 

@@ -235,3 +235,45 @@ export interface RadioListenResult {
   completion_ratio: number;
   qualified: boolean;
 }
+
+export type QueueItemStatus = "ready" | "pending" | "failed";
+export type QueueItemSource = "radio" | "manual";
+
+export interface QueueItem {
+  id: string;
+  position: number;
+  status: QueueItemStatus;
+  source: QueueItemSource;
+  recording_key: string;
+  title: string;
+  artist: string;
+  video_id: string | null;
+  expected_duration_seconds: number | null;
+  import_job_id: string | null;
+  import_status: ImportJobStatus | null;
+  error_message: string | null;
+  reason: string | null;
+  track: Track | null;
+}
+
+export interface QueueState {
+  revision: number;
+  current_item_id: string | null;
+  current_index: number;
+  is_playing: boolean;
+  position_seconds: number;
+  needs_refill: boolean;
+  radio_exhausted: boolean;
+  qualified_seed_count: number;
+  items: QueueItem[];
+}
+
+export interface QueueImportInput {
+  query: string;
+  candidate?: ImportCandidateSelectionInput;
+  play_now: boolean;
+  source_artist?: string;
+  source_title?: string;
+  expected_duration_seconds?: number;
+  recording_key?: string;
+}

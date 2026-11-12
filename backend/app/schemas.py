@@ -409,3 +409,83 @@ class RadioListenCreate(BaseModel):
 class RadioListenOut(BaseModel):
     completion_ratio: float
     qualified: bool
+
+
+class QueuePlayRequest(BaseModel):
+    track_ids: list[UUID] = Field(min_length=1, max_length=500)
+    start_track_id: UUID | None = None
+
+
+class QueuePlayItemRequest(BaseModel):
+    item_id: UUID
+
+
+class QueueAdvanceRequest(BaseModel):
+    direction: str = Field(pattern=r"^(next|previous)$")
+
+
+class QueueStateUpdate(BaseModel):
+    current_item_id: UUID | None = None
+    is_playing: bool
+    position_seconds: int = Field(ge=0, le=86400)
+
+
+class QueueEnqueueRequest(BaseModel):
+    track_ids: list[UUID] = Field(min_length=1, max_length=100)
+
+
+class QueueImportRequest(BaseModel):
+    query: str = Field(min_length=3, max_length=300)
+    candidate: ImportCandidateSelection | None = None
+    play_now: bool = True
+    source_artist: str | None = Field(default=None, max_length=200)
+    source_title: str | None = Field(default=None, max_length=300)
+    expected_duration_seconds: int | None = Field(
+        default=None, ge=1, le=86400
+    )
+    recording_key: str | None = Field(default=None, max_length=400)
+
+    @field_validator("query")
+    @classmethod
+    def strip_queue_query(cls, value: str) -> str:
+        value = value.strip()
+        if len(value) < 3:
+            raise ValueError("Enter at least 3 characters")
+        return value
+
+    @field_validator("source_artist", "source_title", "recording_key")
+    @classmethod
+    def strip_queue_source(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+
+class QueueItemOut(BaseModel):
+    id: UUID
+    position: int
+    status: str
+    source: str
+    recording_key: str
+    title: str
+    artist: str
+    video_id: str | None
+    expected_duration_seconds: int | None
+    import_job_id: UUID | None
+    import_status: str | None
+    error_message: str | None
+    reason: str | None
+    track: TrackOut | None
+
+
+class QueueStateOut(BaseModel):
+    revision: int
+    current_item_id: UUID | None
+    current_index: int
+    is_playing: bool
+    position_seconds: int
+    needs_refill: bool
+    radio_exhausted: bool
+    qualified_seed_count: int
+    items: list[QueueItemOut]

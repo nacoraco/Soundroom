@@ -348,6 +348,17 @@ class DiscoveryLevel(StrEnum):
     adventurous = "adventurous"
 
 
+class QueueItemStatus(StrEnum):
+    ready = "ready"
+    pending = "pending"
+    failed = "failed"
+
+
+class QueueItemSource(StrEnum):
+    radio = "radio"
+    manual = "manual"
+
+
 class RadioFeedbackVerdict(StrEnum):
     reject = "reject"
     like = "like"
@@ -435,6 +446,78 @@ class RadioFeedback(Base):
     )
 
 
+class QueueItem(Base):
+    __tablename__ = "queue_items"
+    __table_args__ = (
+        Index("ix_queue_items_user_position", "user_id", "position"),
+        Index("ix_queue_items_user_status", "user_id", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    track_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("tracks.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    recording_key: Mapped[str] = mapped_column(
+        String(400), index=True, nullable=False
+    )
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    artist: Mapped[str] = mapped_column(String(200), nullable=False)
+    video_id: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    expected_duration_seconds: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    source: Mapped[QueueItemSource] = mapped_column(
+        SAEnum(
+            QueueItemSource,
+            name="queue_item_source",
+            native_enum=False,
+            length=20,
+            create_constraint=True,
+            validate_strings=True,
+        ),
+        default=QueueItemSource.radio,
+        nullable=False,
+    )
+    status: Mapped[QueueItemStatus] = mapped_column(
+        SAEnum(
+            QueueItemStatus,
+            name="queue_item_status",
+            native_enum=False,
+            length=20,
+            create_constraint=True,
+            validate_strings=True,
+        ),
+        default=QueueItemStatus.pending,
+        nullable=False,
+    )
+    import_job_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("rip_jobs.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
+    )
+    reason: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(
+        String(1000), nullable=True
+    )
+    track: Mapped[Track | None] = relationship("Track", lazy="joined")
+    import_job: Mapped[RipJob | None] = relationship(
+        "RipJob", lazy="joined"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 class RadioSession(Base):
     __tablename__ = "radio_sessions"
 
@@ -447,6 +530,23 @@ class RadioSession(Base):
     )
     seed_track_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("tracks.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    current_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("queue_items.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
+    )
+    revision: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    is_playing: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
+    )
+    position_seconds: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    queue_exhausted: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
     )
     discovery_level: Mapped[DiscoveryLevel] = mapped_column(
         SAEnum(

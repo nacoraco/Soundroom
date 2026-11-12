@@ -12,10 +12,15 @@ import {
 } from "react";
 
 import {
+  cancelImportJob,
   createImportJob,
-  discoverRadio,
   getImportJob,
+  getRadioBatch,
+  getRadioSession,
   getTrack,
+  postRadioFeedback,
+  postRadioListen,
+  updateRadioSession,
 } from "./api";
 import { ACTIVE_IMPORT_STATUSES } from "./importStatus";
 import {
@@ -34,21 +39,20 @@ import {
   RECOMMENDATION_BATCH_SIZE,
   RECOMMENDATION_BUFFER_SIZE,
   addRecommendationHistoryEntry,
-  addRecommendationRejection,
   createRecommendationHistoryEntry,
   recommendationKey,
   removeRecommendationHistoryTrack,
   replaceRecommendationHistoryTrack,
-  selectRecommendationSeeds,
   shouldRejectSkippedTrack,
   updateRecommendationProgress,
   type RecommendationHistoryEntry,
-  type RecommendationSeed,
 } from "./recommendationSession";
 import type {
   DiscoverRecommendation,
+  DiscoveryLevel,
   ImportJobStatus,
   ImportPreviewCandidate,
+  RadioRecommendation,
   Track,
 } from "./types";
 
@@ -93,6 +97,15 @@ interface PlayerContextValue {
   setVolume: (volume: number) => void;
   toggleMute: () => void;
   dismissError: () => void;
+  radioExhausted: boolean;
+  discoveryLevel: DiscoveryLevel;
+  setDiscoveryLevel: (level: DiscoveryLevel) => void;
+  canUndoSkip: boolean;
+  undoLastSkip: () => void;
+  dismissRecommendation: (
+    track: PlayerTrack,
+    mode: "not_now" | "never",
+  ) => void;
 }
 
 const PlayerContext = createContext<PlayerContextValue | null>(null);
@@ -109,15 +122,24 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const lastNativePositionUpdateRef = useRef(0);
   const importRequestRef = useRef(0);
   const aliveRef = useRef(true);
-  const recommendationEnabledRef = useRef(false);
-  const originalSongRef = useRef<RecommendationSeed | null>(null);
-  const recommendationRequestRef = useRef(0);
-  const recommendationInFlightRef = useRef(false);
+  const [radioExhausted, setRadioExhausted] = useState(false);
+  const [radioFetchTick, setRadioFetchTick] = useState(0);
+  const [canUndoSkip, setCanUndoSkip] = useState(false);
+  const lastSkippedRef = useRef<PlayerTrack | null>(null);
+  const [discoveryLevel, setDiscoveryLevelState] =
+    useState<DiscoveryLevel>("balanced");
+  const radioRequestRef = useRef(0);
+  const radioInFlightRef = useRef(false);
+  const radioEmptyRetriesRef = useRef(0);
+  const radioReserveRef = useRef<RadioRecommendation[]>([]);
+  const importStartingRef = useRef<Set<string>>(new Set());
+  const cancelledPendingRef = useRef<Set<string>>(new Set());
+  const radioPendingSequenceRef = useRef(0);
   const recommendationHistoryRef = useRef<RecommendationHistoryEntry[]>([]);
   const recommendationOrderRef = useRef(0);
   const lastActiveTrackIdRef = useRef<string | null>(null);
-  const failedRecommendationKeysRef = useRef<RecommendationSeed[]>([]);
-  const rejectedRecommendationKeysRef = useRef<RecommendationSeed[]>([]);
+  const sessionFailedKeysRef = useRef<Set<string>>(new Set());
+  const sessionRejectedKeysRef = useRef<Set<string>>(new Set());
   const stateRef = useRef(state);
   stateRef.current = state;
   const queryClient = useQueryClient();
@@ -133,22 +155,42 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     dispatch({ type: "dedupeAuto" });
   }, [state.queue]);
 
+  useEffect(() => {
+    let cancelled = false;
+    void getRadioSession()
+      .then((session) => {
+        if (cancelled) {
+          return;
+        }
+        setDiscoveryLevelState(session.discovery_level);
+      })
+      .catch(() => {
+        // The radio still works locally if the session endpoint is unavailable.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const resetRecommendationSession = useCallback(
     (track: PlayerTrack | null) => {
-      recommendationRequestRef.current += 1;
-      recommendationInFlightRef.current = false;
+      radioRequestRef.current += 1;
+      radioInFlightRef.current = false;
+      radioEmptyRetriesRef.current = 0;
+      radioReserveRef.current = [];
+      setRadioExhausted(false);
+      lastSkippedRef.current = null;
+      setCanUndoSkip(false);
       recommendationHistoryRef.current = [];
       recommendationOrderRef.current = 0;
       lastActiveTrackIdRef.current = null;
-      failedRecommendationKeysRef.current = [];
-      originalSongRef.current = track
-        ? { title: track.title, artist: track.artist_name }
-        : null;
-      recommendationEnabledRef.current = Boolean(track);
 
       if (track) {
         recommendationHistoryRef.current = [
-          createRecommendationHistoryEntry(track, recommendationOrderRef.current),
+          createRecommendationHistoryEntry(
+            track,
+            recommendationOrderRef.current,
+          ),
         ];
         recommendationOrderRef.current += 1;
         lastActiveTrackIdRef.current = track.id;
@@ -184,45 +226,245 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     );
   }, [captureProgress]);
 
-  const removeFailedRecommendation = useCallback((pendingId: string) => {
-    const snapshot = stateRef.current;
-    const index = snapshot.queue.findIndex(
-      (track) => track.id === pendingId,
-    );
-    if (index === -1) {
-      return;
-    }
-    const track = snapshot.queue[index];
+  const cancelPendingImport = useCallback((track: PlayerTrack) => {
     if (!track.pending) {
       return;
     }
-    const title = track.title.trim();
-    const artist = track.artist_name.trim();
-    const key = recommendationKey(title, artist);
-    failedRecommendationKeysRef.current = [
-      ...failedRecommendationKeysRef.current.filter(
-        (item) => recommendationKey(item.title, item.artist) !== key,
-      ),
-      { title, artist },
-    ].slice(-10);
-    recommendationHistoryRef.current = removeRecommendationHistoryTrack(
-      recommendationHistoryRef.current,
-      pendingId,
-    );
-    dispatch({ type: "remove", index });
-  }, []);
-
-  const rejectTrack = useCallback((track: PlayerTrack) => {
-    const title = track.title.trim();
-    const artist = track.artist_name.trim();
-    if (!title || !artist) {
+    cancelledPendingRef.current.add(track.id);
+    if (!track.import_job_id) {
       return;
     }
-    rejectedRecommendationKeysRef.current = addRecommendationRejection(
-      rejectedRecommendationKeysRef.current,
-      { title, artist },
-    );
+    void cancelImportJob(track.import_job_id).catch(() => {
+      // The worker may already have finished; nothing else to do.
+    });
   }, []);
+
+  const sendListen = useCallback(
+    (track: PlayerTrack, progressSeconds: number, durationSeconds: number) => {
+      if (track.pending || !track.recording_key) {
+        return;
+      }
+      const duration = Math.max(
+        durationSeconds,
+        track.duration_seconds,
+        0,
+      );
+      if (duration <= 0) {
+        return;
+      }
+      const played = Math.max(
+        0,
+        Math.min(progressSeconds, duration),
+      );
+      void postRadioListen({
+        track_id: track.id,
+        played_seconds: Math.round(played),
+        duration_seconds: Math.round(duration),
+        skipped: played / duration < 0.9,
+        source: track.origin === "auto" ? "radio" : "manual",
+      }).catch(() => {
+        // Listening history is best-effort; playback must not be blocked.
+      });
+    },
+    [],
+  );
+
+  const forgiveRecommendation = useCallback(
+    (track: PlayerTrack | Track) => {
+      const pending = (track as PlayerTrack).pending;
+      if (pending) {
+        return;
+      }
+      const key =
+        track.recording_key ||
+        recommendationKey(track.artist_name, track.title);
+      if (!key) {
+        return;
+      }
+      sessionRejectedKeysRef.current.delete(key);
+      const skipped = lastSkippedRef.current;
+      if (skipped) {
+        const skippedKey =
+          skipped.recording_key ||
+          recommendationKey(skipped.artist_name, skipped.title);
+        if (skippedKey === key) {
+          lastSkippedRef.current = null;
+          setCanUndoSkip(false);
+        }
+      }
+      void postRadioFeedback({
+        recording_key: key,
+        track_id: track.id,
+        title: track.title,
+        artist: track.artist_name,
+        verdict: "clear",
+      }).catch(() => {
+        // The local session unblock still applies.
+      });
+    },
+    [],
+  );
+
+  const flushCurrentListen = useCallback(() => {
+    const snapshot = stateRef.current;
+    const current = snapshot.queue[snapshot.currentIndex];
+    if (!current || current.pending) {
+      return;
+    }
+    captureCurrentProgress();
+    const entry = recommendationHistoryRef.current.find(
+      (item) => item.track.id === current.id,
+    );
+    sendListen(
+      current,
+      entry?.progressSeconds ?? snapshot.currentTime,
+      entry?.durationSeconds ?? snapshot.duration,
+    );
+  }, [captureCurrentProgress, sendListen]);
+
+  const removeFailedRecommendation = useCallback(
+    (pendingId: string) => {
+      const snapshot = stateRef.current;
+      const index = snapshot.queue.findIndex(
+        (track) => track.id === pendingId,
+      );
+      if (index === -1) {
+        return;
+      }
+      const track = snapshot.queue[index];
+      if (!track.pending) {
+        return;
+      }
+      const title = track.title.trim();
+      const artist = track.artist_name.trim();
+      const key =
+        track.recording_key || recommendationKey(title, artist);
+      const intentionallyCancelled =
+        cancelledPendingRef.current.delete(pendingId);
+      if (!intentionallyCancelled) {
+        sessionFailedKeysRef.current.add(key);
+        void postRadioFeedback({
+          recording_key: key,
+          title,
+          artist,
+          verdict: "reject",
+          reason: "failed",
+        }).catch(() => {
+          // The local block still prevents the same failed track from returning.
+        });
+      }
+      recommendationHistoryRef.current = removeRecommendationHistoryTrack(
+        recommendationHistoryRef.current,
+        pendingId,
+      );
+      dispatch({ type: "remove", index });
+    },
+    [],
+  );
+
+  const rejectTrack = useCallback(
+    (track: PlayerTrack, reason: "skip" | "remove" = "skip") => {
+      if (track.origin !== "auto") {
+        return;
+      }
+      const title = track.title.trim();
+      const artist = track.artist_name.trim();
+      if (!title || !artist) {
+        return;
+      }
+      const key =
+        track.recording_key || recommendationKey(title, artist);
+      sessionRejectedKeysRef.current.add(key);
+      lastSkippedRef.current = track;
+      setCanUndoSkip(true);
+      void postRadioFeedback({
+        recording_key: key,
+        track_id: track.pending ? undefined : track.id,
+        title,
+        artist,
+        verdict: "reject",
+        reason,
+      }).catch(() => {
+        // Keep the local session rejection even if the server is unreachable.
+      });
+    },
+    [],
+  );
+
+  const undoLastSkip = useCallback(() => {
+    const track = lastSkippedRef.current;
+    if (!track) {
+      return;
+    }
+    lastSkippedRef.current = null;
+    setCanUndoSkip(false);
+    const key =
+      track.recording_key ||
+      recommendationKey(track.artist_name, track.title);
+    sessionRejectedKeysRef.current.delete(key);
+    cancelledPendingRef.current.delete(track.id);
+    void postRadioFeedback({
+      recording_key: key,
+      track_id: track.pending ? undefined : track.id,
+      title: track.title,
+      artist: track.artist_name,
+      verdict: "clear",
+    }).catch(() => {
+      // The local unblock still applies for this session.
+    });
+    const alreadyQueued = stateRef.current.queue.some(
+      (item) =>
+        (item.recording_key ||
+          recommendationKey(item.artist_name, item.title)) === key,
+    );
+    if (!alreadyQueued) {
+      dispatch({
+        type: "appendAuto",
+        tracks: [
+          {
+            ...track,
+            origin: "auto",
+            import_job_id: undefined,
+            pending_status: null,
+            pending_error: null,
+          },
+        ],
+      });
+    }
+    setRadioExhausted(false);
+  }, []);
+
+  const dismissRecommendation = useCallback(
+    (track: PlayerTrack, mode: "not_now" | "never") => {
+      if (track.origin !== "auto") {
+        return;
+      }
+      const key =
+        track.recording_key ||
+        recommendationKey(track.artist_name, track.title);
+      sessionRejectedKeysRef.current.add(key);
+      void postRadioFeedback({
+        recording_key: key,
+        track_id: track.pending ? undefined : track.id,
+        title: track.title,
+        artist: track.artist_name,
+        verdict: "reject",
+        reason: mode,
+      }).catch(() => {
+        // The local block still applies even if the server is unreachable.
+      });
+      const snapshot = stateRef.current;
+      const index = snapshot.queue.findIndex((item) => item.id === track.id);
+      if (index === -1) {
+        return;
+      }
+      if (track.pending) {
+        cancelPendingImport(track);
+      }
+      dispatch({ type: "remove", index });
+    },
+    [cancelPendingImport],
+  );
 
   const currentTrack = state.queue[state.currentIndex] ?? null;
   const currentTrackId = currentTrack?.id ?? null;
@@ -303,12 +545,27 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, [completedTrackQuery.isError, pendingJobId]);
 
   const startPendingQueryImport = useCallback(
-    async (pendingId: string, title: string, artist: string) => {
+    async (
+      pendingId: string,
+      title: string,
+      artist: string,
+      options?: {
+        expectedDurationSeconds?: number | null;
+        recordingKey?: string;
+      },
+    ) => {
       try {
         const job = await createImportJob(
           `${artist} ${title}`.trim(),
           undefined,
-          true,
+          {
+            forceLlmApproval: true,
+            sourceArtist: artist,
+            sourceTitle: title,
+            expectedDurationSeconds:
+              options?.expectedDurationSeconds ?? undefined,
+            recordingKey: options?.recordingKey,
+          },
         );
         if (!aliveRef.current) {
           return;
@@ -392,6 +649,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
               current.status === "failed" ||
               current.status === "cancelled"
             ) {
+              if (current.status === "cancelled") {
+                cancelledPendingRef.current.add(pendingId);
+              }
               removeFailedRecommendation(pendingId);
               return;
             }
@@ -421,55 +681,176 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     [queryClient, removeFailedRecommendation],
   );
 
-  const generateRecommendation = useCallback(
-    async (seeds: RecommendationSeed[], requestId: number) => {
-      if (!recommendationEnabledRef.current || seeds.length === 0) {
-        return;
+  const ensureNextAutoImport = useCallback(() => {
+    const snapshot = stateRef.current;
+    const ahead = snapshot.queue
+      .slice(snapshot.currentIndex + 1)
+      .filter((track) => track.origin === "auto");
+    const hasActiveImport = ahead.some(
+      (track) =>
+        track.pending &&
+        (Boolean(track.import_job_id) ||
+          Boolean(
+            track.pending_status &&
+              ACTIVE_IMPORT_STATUSES.includes(track.pending_status),
+          )),
+    );
+    if (hasActiveImport) {
+      return;
+    }
+    const next = ahead.find(
+      (track) =>
+        track.pending && !track.import_job_id && !track.pending_error,
+    );
+    if (!next || importStartingRef.current.has(next.id)) {
+      return;
+    }
+    importStartingRef.current.add(next.id);
+    void startPendingQueryImport(
+      next.id,
+      next.title,
+      next.artist_name,
+      {
+        expectedDurationSeconds: next.expected_duration_seconds,
+        recordingKey: next.recording_key,
+      },
+    ).finally(() => {
+      importStartingRef.current.delete(next.id);
+    });
+  }, [startPendingQueryImport]);
+
+  const fillRadioBuffer = useCallback(() => {
+    const snapshot = stateRef.current;
+    let autoAhead = snapshot.queue
+      .slice(snapshot.currentIndex + 1)
+      .filter((track) => track.origin === "auto").length;
+    if (autoAhead >= RECOMMENDATION_BUFFER_SIZE) {
+      ensureNextAutoImport();
+      return;
+    }
+
+    const occupied = new Set<string>([
+      ...snapshot.queue.map(
+        (track) =>
+          track.recording_key ||
+          recommendationKey(track.artist_name, track.title),
+      ),
+      ...recommendationHistoryRef.current.map(
+        (entry) =>
+          entry.track.recording_key ||
+          recommendationKey(entry.track.artist_name, entry.track.title),
+      ),
+      ...sessionRejectedKeysRef.current,
+      ...sessionFailedKeysRef.current,
+    ]);
+    const existingIds = new Set(
+      snapshot.queue.map((track) => track.id),
+    );
+    const appended: PlayerTrack[] = [];
+
+    while (
+      autoAhead < RECOMMENDATION_BUFFER_SIZE &&
+      radioReserveRef.current.length > 0
+    ) {
+      const recommendation = radioReserveRef.current.shift();
+      if (!recommendation) {
+        break;
       }
+      const key =
+        recommendation.recording_key ||
+        recommendationKey(recommendation.artist, recommendation.title);
+      if (
+        !key ||
+        occupied.has(key) ||
+        sessionRejectedKeysRef.current.has(key) ||
+        sessionFailedKeysRef.current.has(key)
+      ) {
+        continue;
+      }
+      occupied.add(key);
+
+      if (recommendation.local_track) {
+        if (existingIds.has(recommendation.local_track.id)) {
+          continue;
+        }
+        appended.push({
+          ...recommendation.local_track,
+          origin: "auto",
+          recommendation_reason: recommendation.reason,
+        });
+      } else {
+        appended.push({
+          id: `auto-import-${Date.now()}-${radioPendingSequenceRef.current++}`,
+          title: recommendation.title,
+          artist_name: recommendation.artist,
+          album_title: null,
+          release_year: null,
+          duration_seconds:
+            recommendation.expected_duration_seconds ?? 0,
+          mime_type: "audio/mpeg",
+          source_type: "youtube",
+          is_available: false,
+          recording_key: key,
+          created_at: new Date().toISOString(),
+          pending: true,
+          origin: "auto",
+          pending_status: null,
+          pending_error: null,
+          expected_duration_seconds:
+            recommendation.expected_duration_seconds,
+          source_artist: recommendation.artist,
+          source_title: recommendation.title,
+          recommendation_reason: recommendation.reason,
+        });
+      }
+      autoAhead += 1;
+    }
+
+    if (appended.length > 0) {
+      dispatch({ type: "appendAuto", tracks: appended });
+    } else if (radioReserveRef.current.length === 0) {
+      setRadioFetchTick((value) => value + 1);
+    }
+    ensureNextAutoImport();
+  }, [ensureNextAutoImport]);
+
+  const fetchRadioBatch = useCallback(
+    async (requestId: number) => {
+      const snapshot = stateRef.current;
+      const exclude = Array.from(
+        new Set<string>([
+          ...snapshot.queue.map(
+            (track) =>
+              track.recording_key ||
+              recommendationKey(track.artist_name, track.title),
+          ),
+          ...recommendationHistoryRef.current.map(
+            (entry) =>
+              entry.track.recording_key ||
+              recommendationKey(entry.track.artist_name, entry.track.title),
+          ),
+          ...sessionRejectedKeysRef.current,
+          ...sessionFailedKeysRef.current,
+        ]),
+      )
+        .filter(Boolean)
+        .slice(0, MAX_RECOMMENDATION_EXCLUDE);
+
+      const current = snapshot.queue[snapshot.currentIndex];
+      const seedTrackId =
+        current && !current.pending && current.origin !== "auto"
+          ? current.id
+          : undefined;
 
       try {
-        const snapshot = stateRef.current;
-        const start = Math.max(snapshot.currentIndex, 0);
-        const historyExclude = recommendationHistoryRef.current
-          .map((entry) => ({
-            title: entry.track.title,
-            artist: entry.track.artist_name,
-          }))
-          .filter((track) => track.title.trim() && track.artist.trim());
-        const queueExclude = [
-          ...snapshot.queue.slice(start),
-          ...snapshot.queue.slice(0, start),
-        ]
-          .filter((track) => track.title.trim() && track.artist_name.trim())
-          .slice(0, 50)
-          .map((track) => ({
-            title: track.title,
-            artist: track.artist_name,
-          }));
-        const seenExclude = new Set<string>();
-        const exclude = [
-          ...rejectedRecommendationKeysRef.current,
-          ...failedRecommendationKeysRef.current,
-          ...queueExclude,
-          ...historyExclude,
-        ]
-          .filter((item) => {
-            const key = recommendationKey(item.title, item.artist);
-            if (seenExclude.has(key)) {
-              return false;
-            }
-            seenExclude.add(key);
-            return true;
-          })
-          .slice(0, MAX_RECOMMENDATION_EXCLUDE);
-        const result = await discoverRadio(seeds, {
+        const result = await getRadioBatch({
           limit: RECOMMENDATION_BATCH_SIZE,
           exclude,
+          seedTrackId,
         });
         if (
           !aliveRef.current ||
-          requestId !== recommendationRequestRef.current ||
-          !recommendationEnabledRef.current
+          requestId !== radioRequestRef.current
         ) {
           return;
         }
@@ -478,89 +859,58 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         const existingIds = new Set(
           queueSnapshot.queue.map((track) => track.id),
         );
-        const blockedKeys = new Set<string>([
-          ...rejectedRecommendationKeysRef.current.map((item) =>
-            recommendationKey(item.title, item.artist),
-          ),
-          ...failedRecommendationKeysRef.current.map((item) =>
-            recommendationKey(item.title, item.artist),
-          ),
-          ...queueSnapshot.queue.map((track) =>
-            recommendationKey(track.title, track.artist_name),
-          ),
-          ...recommendationHistoryRef.current.map((entry) =>
-            recommendationKey(entry.track.title, entry.track.artist_name),
-          ),
-        ]);
-        const recommendation = result.recommendations.find((item) => {
-          if (blockedKeys.has(recommendationKey(item.title, item.artist))) {
+        const blocked = new Set(exclude);
+        const reserve = result.recommendations.filter((recommendation) => {
+          const key =
+            recommendation.recording_key ||
+            recommendationKey(
+              recommendation.artist,
+              recommendation.title,
+            );
+          if (!key || blocked.has(key)) {
             return false;
           }
-          if (item.local_track) {
-            if (existingIds.has(item.local_track.id)) {
-              return false;
-            }
-            return !blockedKeys.has(
-              recommendationKey(
-                item.local_track.title,
-                item.local_track.artist_name,
-              ),
-            );
+          if (
+            recommendation.local_track &&
+            existingIds.has(recommendation.local_track.id)
+          ) {
+            return false;
           }
           return true;
         });
-        if (!recommendation) {
+        if (
+          reserve.length === 0 &&
+          !result.exhausted &&
+          result.recommendations.length > 0 &&
+          radioEmptyRetriesRef.current < 2
+        ) {
+          radioEmptyRetriesRef.current += 1;
+          setRadioExhausted(false);
+          setRadioFetchTick((value) => value + 1);
           return;
         }
-
-        if (recommendation.local_track) {
-          dispatch({
-            type: "appendAuto",
-            tracks: [{ ...recommendation.local_track, origin: "auto" }],
-          });
-          return;
-        }
-
-        const pendingId = `auto-import-${Date.now()}`;
-        dispatch({
-          type: "appendAuto",
-          tracks: [
-            {
-              id: pendingId,
-              title: recommendation.title,
-              artist_name: recommendation.artist,
-              album_title: null,
-              release_year: null,
-              duration_seconds: 0,
-              mime_type: "audio/mpeg",
-              source_type: "youtube",
-              is_available: false,
-              created_at: new Date().toISOString(),
-              pending: true,
-              origin: "auto",
-              pending_status: null,
-              pending_error: null,
-            },
-          ],
-        });
-        void startPendingQueryImport(
-          pendingId,
-          recommendation.title,
-          recommendation.artist,
-        );
+        radioEmptyRetriesRef.current = 0;
+        radioReserveRef.current = reserve;
+        setRadioExhausted(result.exhausted && reserve.length === 0);
+        fillRadioBuffer();
       } catch {
         // Playback and the existing queue stay usable when Last.fm is down.
       }
     },
-    [startPendingQueryImport],
+    [fillRadioBuffer],
   );
 
   const playTrack = useCallback(
     (track: Track, queue?: Track[]) => {
+      flushCurrentListen();
+      forgiveRecommendation(track);
       resetRecommendationSession(track);
       dispatch({ type: "play", track, queue });
+      void updateRadioSession({ seed_track_id: track.id }).catch(() => {
+        // The next batch can still use recent listening history.
+      });
     },
-    [resetRecommendationSession],
+    [flushCurrentListen, forgiveRecommendation, resetRecommendationSession],
   );
 
   const startImport = useCallback(
@@ -580,10 +930,15 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         mime_type: "audio/mpeg",
         source_type: "youtube",
         is_available: false,
+        recording_key: recommendationKey(
+          candidate.artist,
+          candidate.title,
+        ),
         created_at: new Date().toISOString(),
         pending: true,
         thumbnail_url: candidate.thumbnail_url,
       };
+      flushCurrentListen();
       resetRecommendationSession(pendingTrack);
       dispatch({ type: "beginImport", track: pendingTrack });
       try {
@@ -610,7 +965,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         });
       }
     },
-    [resetRecommendationSession],
+    [flushCurrentListen, resetRecommendationSession],
   );
 
   const queueImport = useCallback(
@@ -797,6 +1152,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
           mime_type: "audio/mpeg",
           source_type: "youtube",
           is_available: false,
+          recording_key: recommendationKey(
+            recommendation.artist,
+            recommendation.title,
+          ),
+          source_artist: recommendation.artist,
+          source_title: recommendation.title,
           created_at: new Date().toISOString(),
           pending: true,
           pending_status: null,
@@ -868,59 +1229,96 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const playAt = useCallback(
     (index: number) => {
+      const target = stateRef.current.queue[index];
+      if (target) {
+        forgiveRecommendation(target);
+      }
       captureCurrentProgress();
       dispatch({ type: "playAt", index });
     },
-    [captureCurrentProgress],
+    [captureCurrentProgress, forgiveRecommendation],
   );
 
   const removeAt = useCallback(
     (index: number) => {
-      const track = stateRef.current.queue[index];
+      const snapshot = stateRef.current;
+      const track = snapshot.queue[index];
       if (track?.pending && track.pending_status === "failed") {
         removeFailedRecommendation(track.id);
         return;
       }
+      const isCurrent = index === snapshot.currentIndex;
       captureCurrentProgress();
-      if (
-        track &&
-        shouldRejectSkippedTrack(track, recommendationHistoryRef.current)
-      ) {
-        rejectTrack(track);
+      if (isCurrent) {
+        if (
+          track &&
+          shouldRejectSkippedTrack(track, recommendationHistoryRef.current)
+        ) {
+          rejectTrack(track, "skip");
+        }
+      } else if (track?.pending) {
+        cancelPendingImport(track);
       }
       dispatch({ type: "remove", index });
     },
-    [captureCurrentProgress, rejectTrack, removeFailedRecommendation],
+    [
+      cancelPendingImport,
+      captureCurrentProgress,
+      rejectTrack,
+      removeFailedRecommendation,
+    ],
   );
 
   const removeTrack = useCallback(
     (trackId: string) => {
-      const index = state.queue.findIndex((track) => track.id === trackId);
+      const snapshot = stateRef.current;
+      const index = snapshot.queue.findIndex((track) => track.id === trackId);
       if (index !== -1) {
-        const track = state.queue[index];
+        const track = snapshot.queue[index];
         if (track.pending && track.pending_status === "failed") {
           removeFailedRecommendation(trackId);
           return;
         }
+        const isCurrent = index === snapshot.currentIndex;
         captureCurrentProgress();
-        if (shouldRejectSkippedTrack(track, recommendationHistoryRef.current)) {
-          rejectTrack(track);
+        if (isCurrent) {
+          if (
+            shouldRejectSkippedTrack(
+              track,
+              recommendationHistoryRef.current,
+            )
+          ) {
+            rejectTrack(track, "skip");
+          }
+        } else if (track.pending) {
+          cancelPendingImport(track);
         }
         dispatch({ type: "remove", index });
       }
     },
     [
+      cancelPendingImport,
       captureCurrentProgress,
       rejectTrack,
       removeFailedRecommendation,
-      state.queue,
     ],
   );
 
   const clearQueue = useCallback(() => {
+    flushCurrentListen();
+    const snapshot = stateRef.current;
+    for (const track of snapshot.queue) {
+      if (track.pending) {
+        cancelPendingImport(track);
+      }
+    }
     resetRecommendationSession(null);
     dispatch({ type: "clear" });
-  }, [resetRecommendationSession]);
+  }, [
+    cancelPendingImport,
+    flushCurrentListen,
+    resetRecommendationSession,
+  ]);
 
   const setExpanded = useCallback((expanded: boolean) => {
     dispatch({ type: "expanded", expanded });
@@ -936,6 +1334,17 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const dismissError = useCallback(() => {
     dispatch({ type: "error", error: null });
+  }, []);
+
+  const setDiscoveryLevel = useCallback((level: DiscoveryLevel) => {
+    setDiscoveryLevelState(level);
+    setRadioExhausted(false);
+    radioRequestRef.current += 1;
+    radioEmptyRetriesRef.current = 0;
+    radioReserveRef.current = [];
+    void updateRadioSession({ discovery_level: level }).catch(() => {
+      // The next successful request will persist the chosen level.
+    });
   }, []);
 
   const requestPlay = useCallback((audio: HTMLAudioElement) => {
@@ -1355,16 +1764,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
           previousTrackId,
           currentTrack,
         );
+      } else if (previousEntry && !previousEntry.track.pending) {
+        sendListen(
+          previousEntry.track,
+          previousEntry.progressSeconds,
+          previousEntry.durationSeconds,
+        );
       }
-    }
-
-    if (!originalSongRef.current) {
-      originalSongRef.current = {
-        title: currentTrack.title,
-        artist: currentTrack.artist_name,
-      };
-      recommendationEnabledRef.current = true;
-      recommendationRequestRef.current += 1;
     }
 
     if (!history.some((entry) => entry.track.id === currentTrack.id)) {
@@ -1380,7 +1786,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
     recommendationHistoryRef.current = history;
     lastActiveTrackIdRef.current = currentTrack.id;
-  }, [currentTrack]);
+  }, [currentTrack, sendListen]);
 
   useEffect(() => {
     if (!currentTrack) {
@@ -1395,9 +1801,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, [currentTrack, state.currentTime, state.duration]);
 
   useEffect(() => {
+    ensureNextAutoImport();
+  }, [currentTrack, ensureNextAutoImport, state.currentIndex, state.queue]);
+
+  useEffect(() => {
     if (
-      !recommendationEnabledRef.current ||
-      recommendationInFlightRef.current ||
+      radioInFlightRef.current ||
+      radioExhausted ||
       !currentTrack ||
       currentTrack.pending
     ) {
@@ -1411,23 +1821,31 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     if (autoAhead >= RECOMMENDATION_BUFFER_SIZE) {
       return;
     }
-
-    const seeds = selectRecommendationSeeds(
-      recommendationHistoryRef.current,
-      originalSongRef.current,
-    );
-    if (seeds.length === 0) {
+    if (
+      radioReserveRef.current.length + autoAhead >
+      RECOMMENDATION_BUFFER_SIZE
+    ) {
+      fillRadioBuffer();
       return;
     }
 
-    const requestId = recommendationRequestRef.current;
-    recommendationInFlightRef.current = true;
-    void generateRecommendation(seeds, requestId).finally(() => {
-      if (requestId === recommendationRequestRef.current) {
-        recommendationInFlightRef.current = false;
+    const requestId = radioRequestRef.current;
+    radioInFlightRef.current = true;
+    void fetchRadioBatch(requestId).finally(() => {
+      if (requestId === radioRequestRef.current) {
+        radioInFlightRef.current = false;
       }
     });
-  }, [currentTrack, generateRecommendation, state.currentIndex, state.queue]);
+  }, [
+    currentTrack,
+    discoveryLevel,
+    fetchRadioBatch,
+    fillRadioBuffer,
+    radioExhausted,
+    radioFetchTick,
+    state.currentIndex,
+    state.queue,
+  ]);
 
   const value = useMemo<PlayerContextValue>(
     () => ({
@@ -1452,11 +1870,21 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       setVolume,
       toggleMute,
       dismissError,
+      radioExhausted,
+      discoveryLevel,
+      setDiscoveryLevel,
+      canUndoSkip,
+      undoLastSkip,
+      dismissRecommendation,
     }),
     [
+      canUndoSkip,
       clearQueue,
       currentTrack,
+      discoveryLevel,
       dismissError,
+      dismissRecommendation,
+      undoLastSkip,
       dismissQueuedImport,
       enqueue,
       next,
@@ -1466,9 +1894,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       queueExternalRecommendation,
       queueImport,
       queuedImports,
+      radioExhausted,
       removeAt,
       removeTrack,
       seek,
+      setDiscoveryLevel,
       setExpanded,
       setVolume,
       startImport,

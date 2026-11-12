@@ -21,6 +21,7 @@ const track: Track = {
   mime_type: "audio/mpeg",
   source_type: "upload",
   is_available: true,
+  recording_key: "first",
   created_at: "2026-11-08T00:00:00Z",
 };
 
@@ -28,6 +29,7 @@ const secondTrack: Track = {
   ...track,
   id: "second",
   title: "Second Song",
+  recording_key: "second",
 };
 
 let visibilityState: DocumentVisibilityState = "visible";

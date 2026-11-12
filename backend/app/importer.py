@@ -27,6 +27,7 @@ from .models import (
     Track,
     TrackSource,
 )
+from .recommendations import canonical_metadata, song_identity
 from .settings_service import get_or_create_app_settings
 from .text import normalize_text
 
@@ -47,6 +48,22 @@ VERSION_MARKERS = (
     "sped up",
     "bbc",
     "session",
+    "bluray",
+    "blu ray",
+    "dvd",
+    "webrip",
+    "hdrip",
+    "1080p",
+    "720p",
+    "480p",
+    "x264",
+    "x265",
+    "h264",
+    "h265",
+)
+VERSION_MARKER_PATTERN = re.compile(
+    r"\b(?:" + "|".join(re.escape(marker) for marker in VERSION_MARKERS) + r")\b",
+    re.IGNORECASE,
 )
 LIVE_PERFORMANCE_PATTERN = re.compile(
     r"(?:[\(\[]\s*[^\)\]]*\b(?:live|concert|performance|performed live|"
@@ -74,6 +91,45 @@ class Candidate:
 
 def is_live_performance(candidate: Candidate) -> bool:
     return bool(LIVE_PERFORMANCE_PATTERN.search(candidate.title))
+
+
+def version_markers(value: str) -> frozenset[str]:
+    return frozenset(VERSION_MARKER_PATTERN.findall(normalize_text(value)))
+
+
+def version_conflict(candidate: Candidate, source_title: str | None) -> bool:
+    allowed = version_markers(source_title or "")
+    found = version_markers(candidate.title)
+    if found - allowed:
+        return True
+    if is_live_performance(candidate) and not (
+        {"live", "concert", "performance", "unplugged"} & allowed
+    ):
+        return True
+    return False
+
+
+def duration_conflict(
+    candidate: Candidate,
+    expected_duration_seconds: int | None,
+) -> bool:
+    if expected_duration_seconds is None or candidate.duration_seconds is None:
+        return False
+    tolerance = max(15, round(expected_duration_seconds * 0.10))
+    return abs(candidate.duration_seconds - expected_duration_seconds) > tolerance
+
+
+def filter_candidates(
+    candidates: list[Candidate],
+    source_title: str | None,
+    expected_duration_seconds: int | None,
+) -> list[Candidate]:
+    return [
+        candidate
+        for candidate in candidates
+        if not version_conflict(candidate, source_title)
+        and not duration_conflict(candidate, expected_duration_seconds)
+    ]
 
 
 def _candidate_video_id(entry: dict) -> str | None:
@@ -371,10 +427,15 @@ def _candidate_from_job(job: RipJob) -> Candidate:
     )
 
 
+def _job_is_cancelled(db: Session, job: RipJob) -> bool:
+    db.refresh(job, attribute_names=["status"])
+    return job.status is RipJobStatus.cancelled
+
+
 def _fail_job(db: Session, job_id, message: str) -> None:
     db.rollback()
     job = db.get(RipJob, job_id)
-    if job is None:
+    if job is None or job.status is RipJobStatus.cancelled:
         return
     job.status = RipJobStatus.failed
     job.error_message = message[:1000]
@@ -394,9 +455,14 @@ def _publish_download(
     media_root = Path(config.media_storage_path)
     media_root.mkdir(parents=True, exist_ok=True)
 
+    if _job_is_cancelled(db, job):
+        return
+
     with tempfile.TemporaryDirectory(dir=media_root) as temp_dir:
         workdir = Path(temp_dir)
         source = download_candidate(candidate, workdir)
+        if _job_is_cancelled(db, job):
+            return
         job.status = RipJobStatus.processing
         db.add(job)
         db.commit()
@@ -407,6 +473,20 @@ def _publish_download(
             raise ValueError(
                 "The downloaded track exceeds the configured maximum duration."
             )
+        if duration_conflict(
+            Candidate(
+                url=candidate.url,
+                title=candidate.title,
+                artist=candidate.artist,
+                duration_seconds=duration,
+            ),
+            job.expected_duration_seconds,
+        ):
+            raise ValueError(
+                "The downloaded recording does not match the expected duration."
+            )
+        if _job_is_cancelled(db, job):
+            return
 
         relative_path = f"tracks/{uuid4().hex}.mp3"
         final_path = media_root / relative_path
@@ -428,11 +508,16 @@ def _publish_download(
                 final_path.unlink(missing_ok=True)
                 return
 
-            normalized_artist = normalize_text(candidate.artist or "")
-            normalized_title = normalize_text(candidate.title)
-            if not normalized_artist or not normalized_title:
+            source_artist = job.source_artist or candidate.artist or ""
+            source_title = job.source_title or candidate.title
+            display_artist, display_title = canonical_metadata(
+                source_artist, source_title
+            )
+            if not display_artist or not display_title:
                 raise ValueError("Candidate title or artist is empty.")
 
+            normalized_artist = normalize_text(display_artist)
+            normalized_title = normalize_text(display_title)
             artist = db.scalar(
                 select(Artist).where(
                     Artist.normalized_name == normalized_artist
@@ -440,7 +525,7 @@ def _publish_download(
             )
             if artist is None:
                 artist = Artist(
-                    name=candidate.artist,
+                    name=display_artist,
                     normalized_name=normalized_artist,
                 )
                 db.add(artist)
@@ -449,8 +534,11 @@ def _publish_download(
             track = Track(
                 artist_id=artist.id,
                 album_id=None,
-                title=candidate.title,
+                title=display_title,
                 normalized_title=normalized_title,
+                canonical_artist=display_artist,
+                canonical_title=display_title,
+                recording_key=song_identity(source_artist, source_title),
                 duration_seconds=duration,
                 file_path=relative_path,
                 mime_type="audio/mpeg",
@@ -482,15 +570,30 @@ def process_job(
 ) -> None:
     job_id = job.id
     try:
+        if _job_is_cancelled(db, job):
+            return
         if job.status is RipJobStatus.searching:
             candidates = search_candidates(job.query_text)
+            if _job_is_cancelled(db, job):
+                return
+            unfiltered_count = len(candidates)
+            candidates = filter_candidates(
+                candidates,
+                job.source_title,
+                job.expected_duration_seconds,
+            )
             max_seconds = max(1, max_track_minutes) * 60
             ranked = rank_candidates(job.query_text, candidates, max_seconds)
             candidate, ambiguous = choose_candidate(
                 job.query_text, candidates, max_seconds
             )
             if candidate is None:
-                if not candidates:
+                if unfiltered_count and not candidates:
+                    message = (
+                        "No suitable version matched the requested recording "
+                        "(live, cover, remix, karaoke, or wrong duration)."
+                    )
+                elif not candidates:
                     message = (
                         "No external search results found for this track."
                     )
@@ -552,10 +655,14 @@ def process_job(
                 db.commit()
                 return
 
+            if _job_is_cancelled(db, job):
+                return
             job.status = RipJobStatus.downloading
             db.add(job)
             db.commit()
 
+        if _job_is_cancelled(db, job):
+            return
         if job.status is not RipJobStatus.downloading:
             return
 

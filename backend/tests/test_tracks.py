@@ -211,3 +211,62 @@ def test_artist_and_album_are_reused(client: TestClient, upload_settings, db_ses
     assert len(artists) == 1
     assert len(albums) == 1
     assert len(tracks) == 2
+
+def test_track_list_sorts_by_user_play_count(
+    client: TestClient, upload_settings, db_session
+):
+    headers = admin_headers(client)
+    track_ids = []
+    for index in range(3):
+        path = (
+            Path(upload_settings.media_storage_path)
+            / f"source-{index}.mp3"
+        )
+        content = make_mp3(
+            path,
+            title=f"Song {index}",
+            artist="Play Count Artist",
+        )
+        response = upload(
+            client,
+            headers,
+            content,
+            filename=f"track-{index}.mp3",
+        )
+        assert response.status_code == 201
+        track_ids.append(response.json()["id"])
+
+    for _ in range(2):
+        response = client.post(
+            "/api/radio/listen",
+            json={
+                "track_id": track_ids[0],
+                "played_seconds": 1,
+                "duration_seconds": 1,
+                "skipped": False,
+                "source": "manual",
+            },
+            headers=headers,
+        )
+        assert response.status_code == 200
+    response = client.post(
+        "/api/radio/listen",
+        json={
+            "track_id": track_ids[1],
+            "played_seconds": 1,
+            "duration_seconds": 1,
+            "skipped": False,
+            "source": "manual",
+        },
+        headers=headers,
+    )
+    assert response.status_code == 200
+
+    listing = client.get("/api/tracks", params={"sort": "most_played"})
+    assert listing.status_code == 200
+    items = listing.json()["items"]
+    assert [item["id"] for item in items] == track_ids
+    assert items[0]["play_count"] == 2
+    assert items[1]["play_count"] == 1
+    assert items[2]["play_count"] == 0
+    assert items[0]["last_played_at"] is not None

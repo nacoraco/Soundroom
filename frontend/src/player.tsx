@@ -1647,6 +1647,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, [currentTrack, state.currentTime, state.duration]);
 
   useEffect(() => {
+    setRadioExhausted(false);
+  }, [currentTrack?.id]);
+
+  useEffect(() => {
     if (!currentTrack) {
       lastActiveTrackIdRef.current = null;
       return;

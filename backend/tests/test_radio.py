@@ -281,6 +281,54 @@ def test_radio_batch_filters_rejections_recent_and_attaches_local(db_session):
     assert local_candidate.local_track.id == local.id
 
 
+def test_radio_expands_sources_when_the_similar_pool_is_small(db_session):
+    user = admin(db_session)
+    seed = make_track(db_session, "Seed Song", "Seed Artist")
+    add_listen(db_session, seed, 0.95)
+    artist_names = [f"Similar Artist {index}" for index in range(10)]
+    client = FakeLastfm(
+        similar={
+            ("Seed Artist", "Seed Song"): [
+                SimilarTrack("Only Similar", "Other Artist", 0.9)
+            ]
+        },
+        similar_artists={
+            "Seed Artist": [
+                SimilarArtist(name, 0.9) for name in artist_names
+            ]
+        },
+        artist_tracks={
+            name: [SimilarTrack(f"Expanded {index}", name, 1.0)]
+            for index, name in enumerate(artist_names)
+        }
+        | {
+            "Seed Artist": [
+                SimilarTrack(f"Deep Cut {index}", "Seed Artist", 1.0)
+                for index in range(10)
+            ]
+        },
+    )
+    session = get_or_create_session(db_session, user.id)
+    session.seed_track_id = seed.id
+    db_session.add(session)
+    db_session.commit()
+    db_session.refresh(session)
+
+    selected, _ = build_radio_batch(
+        db_session,
+        client,
+        user.id,
+        session,
+        limit=10,
+        rng=random.Random(5),
+    )
+
+    titles = {candidate.title for candidate in selected}
+    assert len(selected) == 10
+    assert "Only Similar" in titles
+    assert "Expanded 7" in titles
+
+
 def test_artist_cap_keeps_at_most_two_per_ten(db_session):
     from app.radio import PROFILES, RadioCandidate, rank_candidates
 

@@ -52,6 +52,14 @@ RELAXED_ARTIST_CAP = 3
 CACHE_TTL_SECONDS = 24 * 60 * 60
 MIN_MATCH_BALANCED = 0.30
 MIN_MATCH_ADVENTUROUS = 0.20
+EXPANDED_ARTIST_SEEDS = 5
+EXPANDED_ARTIST_QUEUE = 12
+EXPANDED_ARTISTS_PER_SEED = 8
+EXPANDED_TRACKS_PER_ARTIST = 6
+EXPANDED_OWN_ARTIST_TRACKS = 10
+EXPANDED_TAG_SEEDS = 5
+EXPANDED_TAGS = 3
+EXPANDED_TAG_TRACKS = 30
 
 
 @dataclass(frozen=True)
@@ -466,8 +474,11 @@ def build_candidates(
     seeds: list[RadioSeed],
     profile: DiscoveryProfile,
     local_index: dict[str, Track],
+    *,
+    expanded: bool = False,
+    candidates: dict[str, RadioCandidate] | None = None,
 ) -> dict[str, RadioCandidate]:
-    candidates: dict[str, RadioCandidate] = {}
+    candidates = candidates if candidates is not None else {}
     seed_keys = {seed.recording_key for seed in seeds}
 
     for seed in seeds:
@@ -485,23 +496,32 @@ def build_candidates(
                 local_index,
             )
 
-    artist_seeds = seeds[:2]
+    artist_seeds = seeds[:EXPANDED_ARTIST_SEEDS] if expanded else seeds[:2]
     artist_queue: list[tuple[RadioSeed, SimilarArtist]] = []
     seen_artists: set[str] = set()
+    max_artists = EXPANDED_ARTIST_QUEUE if expanded else 4
+    artists_per_seed = (
+        EXPANDED_ARTISTS_PER_SEED if expanded else 4
+    )
+    tracks_per_artist = (
+        EXPANDED_TRACKS_PER_ARTIST if expanded else 3
+    )
     for seed in artist_seeds:
-        for artist in _cached_similar_artists(db, client, seed.artist, 4):
+        for artist in _cached_similar_artists(
+            db, client, seed.artist, artists_per_seed
+        ):
             artist_key = normalize_text(artist.name)
             if not artist_key or artist_key in seen_artists:
                 continue
             seen_artists.add(artist_key)
             artist_queue.append((seed, artist))
-            if len(artist_queue) >= 4:
+            if len(artist_queue) >= max_artists:
                 break
-        if len(artist_queue) >= 4:
+        if len(artist_queue) >= max_artists:
             break
     for seed, artist in artist_queue:
         for similar in _cached_artist_top_tracks(
-            db, client, artist.name, 3
+            db, client, artist.name, tracks_per_artist
         ):
             _add_candidate(
                 candidates,
@@ -513,7 +533,22 @@ def build_candidates(
                 reason=f"Similar to {seed.title}",
             )
 
-    tag_seeds = seeds[:2]
+    if expanded:
+        for seed in seeds[:EXPANDED_ARTIST_SEEDS]:
+            for similar in _cached_artist_top_tracks(
+                db, client, seed.artist, EXPANDED_OWN_ARTIST_TRACKS
+            ):
+                _add_candidate(
+                    candidates,
+                    seed,
+                    similar,
+                    "artist",
+                    0.5,
+                    local_index,
+                    reason=f"More from {seed.artist}",
+                )
+
+    tag_seeds = seeds[:EXPANDED_TAG_SEEDS] if expanded else seeds[:2]
     tag_counts: Counter[str] = Counter()
     tag_owner: dict[str, RadioSeed] = {}
     for seed in tag_seeds:
@@ -521,9 +556,13 @@ def build_candidates(
         for tag in info.tags[:5]:
             tag_counts[tag] += 1
             tag_owner.setdefault(tag, seed)
-    for tag, _count in tag_counts.most_common(2):
+    max_tags = EXPANDED_TAGS if expanded else 2
+    tag_tracks = EXPANDED_TAG_TRACKS if expanded else 15
+    for tag, _count in tag_counts.most_common(max_tags):
         seed = tag_owner[tag]
-        for similar in _cached_tag_top_tracks(db, client, tag, 15):
+        for similar in _cached_tag_top_tracks(
+            db, client, tag, tag_tracks
+        ):
             _add_candidate(
                 candidates,
                 seed,
@@ -680,7 +719,9 @@ def build_radio_batch(
     queue_keys = {key for key in (exclude or []) if key}
     local_index = local_track_index(db)
 
-    candidates = build_candidates(db, client, seeds, profile, local_index)
+    candidates = build_candidates(
+        db, client, seeds, profile, local_index
+    )
     filtered = filter_candidates(
         candidates,
         seeds,
@@ -696,6 +737,33 @@ def build_radio_batch(
         artist_penalties=artist_penalties,
     )
     selected = select_batch(ranked, limit, profile)
+
+    if len(selected) < limit:
+        build_candidates(
+            db,
+            client,
+            seeds,
+            profile,
+            local_index,
+            expanded=True,
+            candidates=candidates,
+        )
+        filtered = filter_candidates(
+            candidates,
+            seeds,
+            rejected_keys,
+            recent_keys,
+            queue_keys,
+            profile.min_match,
+        )
+        ranked = rank_candidates(
+            filtered,
+            profile,
+            rng=rng,
+            artist_penalties=artist_penalties,
+        )
+        selected = select_batch(ranked, limit, profile)
+
     enrich_expected_duration(db, client, selected)
     return selected, len(seeds)
 

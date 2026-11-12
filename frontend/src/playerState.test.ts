@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { initialPlayerState, playerReducer } from "./playerState";
+import { recommendationKey } from "./recommendationSession";
 import type { Track } from "./types";
 
 function track(
@@ -18,6 +19,7 @@ function track(
     mime_type: "audio/mpeg",
     source_type: "upload",
     is_available: true,
+    recording_key: recommendationKey(title, "Test Artist"),
     created_at: "2026-11-08T00:00:00Z",
   };
 }
@@ -80,11 +82,19 @@ describe("playerReducer", () => {
     const current = {
       ...track("current", "Semi-Charmed Life (2006 Remaster)"),
       artist_name: "thirdeyeblind",
+      recording_key: recommendationKey(
+        "Semi-Charmed Life (2006 Remaster)",
+        "thirdeyeblind",
+      ),
       origin: "auto" as const,
     };
     const duplicate = {
       ...track("duplicate", "Semi-Charmed Life (2006 Remaster)"),
       artist_name: "thirdeyeblind",
+      recording_key: recommendationKey(
+        "Semi-Charmed Life (2006 Remaster)",
+        "thirdeyeblind",
+      ),
       origin: "auto" as const,
     };
     const variant = {
@@ -93,6 +103,10 @@ describe("playerReducer", () => {
         "Third Eye Blind - Semi-Charmed Life / Lyrics",
       ),
       artist_name: "Third Eye Blind",
+      recording_key: recommendationKey(
+        "Third Eye Blind - Semi-Charmed Life / Lyrics",
+        "Third Eye Blind",
+      ),
       origin: "auto" as const,
     };
     const fresh = {

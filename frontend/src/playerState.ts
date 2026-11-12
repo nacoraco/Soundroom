@@ -8,6 +8,10 @@ export interface PlayerTrack extends Track {
   pending_error?: string | null;
   thumbnail_url?: string | null;
   origin?: "manual" | "auto";
+  expected_duration_seconds?: number | null;
+  source_artist?: string | null;
+  source_title?: string | null;
+  recommendation_reason?: string | null;
 }
 
 export interface PlayerState {
@@ -188,13 +192,17 @@ export function playerReducer(
         return state;
       }
       const existingKeys = new Set(
-        state.queue.map((track) =>
-          recommendationKey(track.title, track.artist_name),
+        state.queue.map(
+          (track) =>
+            track.recording_key ||
+            recommendationKey(track.title, track.artist_name),
         ),
       );
       const tracks = action.tracks
         .filter((track) => {
-          const key = recommendationKey(track.title, track.artist_name);
+          const key =
+            track.recording_key ||
+            recommendationKey(track.title, track.artist_name);
           if (existingKeys.has(key)) {
             return false;
           }
@@ -218,7 +226,9 @@ export function playerReducer(
       const seen = new Set<string>();
       let changed = false;
       const queue = state.queue.filter((track, index) => {
-        const key = recommendationKey(track.title, track.artist_name);
+        const key =
+          track.recording_key ||
+          recommendationKey(track.title, track.artist_name);
         if (index <= state.currentIndex) {
           seen.add(key);
           return true;
@@ -262,6 +272,10 @@ export function playerReducer(
       queue[index] = {
         ...action.track,
         origin: previous.origin,
+        recommendation_reason: previous.recommendation_reason,
+        expected_duration_seconds: previous.expected_duration_seconds,
+        source_artist: previous.source_artist,
+        source_title: previous.source_title,
       };
       if (index !== state.currentIndex) {
         return { ...state, queue };
@@ -359,8 +373,19 @@ export function playerReducer(
       if (!isPending(state)) {
         return state;
       }
+      const previous = currentTrackOf(state);
       const queue = state.queue.map((track, index) =>
-        index === state.currentIndex ? action.track : track,
+        index === state.currentIndex
+          ? {
+              ...action.track,
+              origin: previous?.origin,
+              recommendation_reason: previous?.recommendation_reason,
+              expected_duration_seconds:
+                previous?.expected_duration_seconds,
+              source_artist: previous?.source_artist,
+              source_title: previous?.source_title,
+            }
+          : track,
       );
       return {
         ...state,

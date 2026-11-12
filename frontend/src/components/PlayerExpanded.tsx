@@ -37,6 +37,14 @@ export function PlayerExpanded() {
     toggleMute,
     queuedImports,
     dismissQueuedImport,
+    radioEnabled,
+    radioExhausted,
+    discoveryLevel,
+    toggleRadio,
+    setDiscoveryLevel,
+    canUndoSkip,
+    undoLastSkip,
+    dismissRecommendation,
   } = usePlayer();
   const [queueOpen, setQueueOpen] = useState(false);
 
@@ -125,6 +133,13 @@ export function PlayerExpanded() {
                   importStatusLabel(track.pending_status ?? null))
                 : track.artist_name}
             </span>
+            {!track.pending &&
+              track.origin === "auto" &&
+              track.recommendation_reason && (
+                <span className="player-queue-reason mono">
+                  {track.recommendation_reason}
+                </span>
+              )}
           </span>
           <span className="player-queue-duration mono">
             {formatTime(track.duration_seconds)}
@@ -386,6 +401,65 @@ export function PlayerExpanded() {
               <h3>{isPending ? "Incoming" : "Up next"}</h3>
             </div>
             <div className="player-queue-head-actions">
+              {canUndoSkip && (
+                <button
+                  type="button"
+                  className="player-queue-clear"
+                  onClick={undoLastSkip}
+                  aria-label="Undo the last skipped recommendation"
+                >
+                  Undo skip
+                </button>
+              )}
+              {currentTrack?.origin === "auto" && !currentTrack.pending && (
+                <>
+                  <button
+                    type="button"
+                    className="player-queue-clear"
+                    onClick={() =>
+                      dismissRecommendation(currentTrack, "not_now")
+                    }
+                    title="Hide this recommendation for 7 days"
+                  >
+                    Not now
+                  </button>
+                  <button
+                    type="button"
+                    className="player-queue-clear"
+                    onClick={() =>
+                      dismissRecommendation(currentTrack, "never")
+                    }
+                    title="Never recommend this recording again"
+                  >
+                    Never
+                  </button>
+                </>
+              )}
+              <button
+                type="button"
+                className="player-queue-clear"
+                onClick={toggleRadio}
+                aria-pressed={radioEnabled}
+                aria-label={
+                  radioEnabled ? "Turn radio off" : "Turn radio on"
+                }
+              >
+                Radio {radioEnabled ? "on" : "off"}
+              </button>
+              <select
+                className="player-queue-clear"
+                value={discoveryLevel}
+                onChange={(event) =>
+                  setDiscoveryLevel(
+                    event.target.value as typeof discoveryLevel,
+                  )
+                }
+                aria-label="Discovery level"
+              >
+                <option value="familiar">Familiar</option>
+                <option value="balanced">Balanced</option>
+                <option value="adventurous">Adventurous</option>
+              </select>
               <button
                 type="button"
                 className="player-queue-clear"
@@ -451,6 +525,12 @@ export function PlayerExpanded() {
                     )}
                   </ol>
                 </section>
+              )}
+
+              {radioEnabled && radioExhausted && (
+                <p className="player-queue-empty">
+                  Radio is out of new candidates right now.
+                </p>
               )}
             </div>
           )}

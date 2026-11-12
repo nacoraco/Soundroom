@@ -39,6 +39,7 @@ export interface Track {
   mime_type: string;
   source_type: TrackSource;
   is_available: boolean;
+  recording_key: string;
   created_at: string;
 }
 
@@ -69,6 +70,10 @@ export interface ImportJob {
   candidate_title: string | null;
   candidate_artist: string | null;
   candidate_duration_seconds: number | null;
+  source_artist: string | null;
+  source_title: string | null;
+  expected_duration_seconds: number | null;
+  recording_key: string | null;
   track_id: string | null;
   error_message: string | null;
   created_at: string;
@@ -169,4 +174,63 @@ export interface DiscoverRecommendation {
 export interface DiscoverResponse {
   seeds: string[];
   recommendations: DiscoverRecommendation[];
+}
+
+export type DiscoveryLevel = "familiar" | "balanced" | "adventurous";
+
+export interface RadioRecommendation {
+  title: string;
+  artist: string;
+  recording_key: string;
+  local_track: Track | null;
+  score: number;
+  seed_count: number;
+  expected_duration_seconds: number | null;
+  reason: string | null;
+  sources: string[];
+}
+
+export interface RadioBatch {
+  recommendations: RadioRecommendation[];
+  seed_count: number;
+  qualified_seed_count: number;
+  discovery_level: DiscoveryLevel;
+  exhausted: boolean;
+}
+
+export interface RadioSession {
+  enabled: boolean;
+  discovery_level: DiscoveryLevel;
+  seed_track: Track | null;
+  qualified_seed_count: number;
+}
+
+export interface RadioSessionUpdateInput {
+  enabled?: boolean;
+  seed_track_id?: string;
+  discovery_level?: DiscoveryLevel;
+  reset_seed?: boolean;
+}
+
+export interface RadioFeedbackInput {
+  recording_key?: string;
+  track_id?: string;
+  title?: string;
+  artist?: string;
+  verdict: "reject" | "like" | "clear";
+  reason?: "skip" | "remove" | "not_now" | "never" | "failed" | "manual";
+}
+
+export interface RadioListenInput {
+  track_id: string;
+  played_seconds: number;
+  duration_seconds: number;
+  skipped: boolean;
+  source: "radio" | "manual" | "playlist";
+  started_at?: string;
+}
+
+export interface RadioListenResult {
+  completion_ratio: number;
+  qualified: boolean;
 }

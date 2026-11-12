@@ -8,10 +8,12 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Enum as SAEnum,
+    Float,
     ForeignKey,
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     Uuid,
     func,
@@ -128,6 +130,19 @@ class Track(Base):
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     normalized_title: Mapped[str] = mapped_column(
         String(300), index=True, nullable=False
+    )
+    canonical_artist: Mapped[str] = mapped_column(
+        String(200), default="", server_default="", nullable=False
+    )
+    canonical_title: Mapped[str] = mapped_column(
+        String(300), default="", server_default="", nullable=False
+    )
+    recording_key: Mapped[str] = mapped_column(
+        String(400),
+        default="",
+        server_default="",
+        index=True,
+        nullable=False,
     )
     duration_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
     file_path: Mapped[str] = mapped_column(
@@ -298,6 +313,14 @@ class RipJob(Base):
     candidate_duration_seconds: Mapped[int | None] = mapped_column(
         Integer, nullable=True
     )
+    source_artist: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    source_title: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    expected_duration_seconds: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    recording_key: Mapped[str | None] = mapped_column(
+        String(400), index=True, nullable=True
+    )
     force_llm_approval: Mapped[bool] = mapped_column(
         Boolean,
         default=False,
@@ -316,5 +339,148 @@ class RipJob(Base):
     )
     finished_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+
+
+class DiscoveryLevel(StrEnum):
+    familiar = "familiar"
+    balanced = "balanced"
+    adventurous = "adventurous"
+
+
+class RadioFeedbackVerdict(StrEnum):
+    reject = "reject"
+    like = "like"
+
+
+class Listen(Base):
+    __tablename__ = "listens"
+    __table_args__ = (
+        Index("ix_listens_user_started", "user_id", "started_at"),
+        Index("ix_listens_user_track", "user_id", "track_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    track_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("tracks.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    recording_key: Mapped[str] = mapped_column(
+        String(400), index=True, nullable=False
+    )
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    artist: Mapped[str] = mapped_column(String(200), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+        nullable=False,
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    played_seconds: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    duration_seconds: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    completion_ratio: Mapped[float] = mapped_column(
+        Float, default=0.0, nullable=False
+    )
+    skipped: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    source: Mapped[str] = mapped_column(
+        String(20), default="radio", nullable=False
+    )
+
+
+class RadioFeedback(Base):
+    __tablename__ = "radio_feedback"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "recording_key", name="uq_radio_feedback_user_recording"
+        ),
+        Index("ix_radio_feedback_user_verdict", "user_id", "verdict"),
+        Index("ix_radio_feedback_user_artist", "user_id", "artist"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    track_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("tracks.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    recording_key: Mapped[str] = mapped_column(
+        String(400), index=True, nullable=False
+    )
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    artist: Mapped[str] = mapped_column(String(200), nullable=False)
+    verdict: Mapped[RadioFeedbackVerdict] = mapped_column(
+        SAEnum(
+            RadioFeedbackVerdict,
+            name="radio_feedback_verdict",
+            native_enum=False,
+            length=20,
+            create_constraint=True,
+            validate_strings=True,
+        ),
+        default=RadioFeedbackVerdict.reject,
+        nullable=False,
+    )
+    reason: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True, nullable=True
+    )
+
+
+class RadioSession(Base):
+    __tablename__ = "radio_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        unique=True,
+        index=True,
+        nullable=False,
+    )
+    seed_track_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("tracks.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    discovery_level: Mapped[DiscoveryLevel] = mapped_column(
+        SAEnum(
+            DiscoveryLevel,
+            name="radio_discovery_level",
+            native_enum=False,
+            length=20,
+            create_constraint=True,
+            validate_strings=True,
+        ),
+        default=DiscoveryLevel.balanced,
+        nullable=False,
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class LastfmCache(Base):
+    __tablename__ = "lastfm_cache"
+
+    key: Mapped[str] = mapped_column(String(500), primary_key=True)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), index=True, nullable=False
     )
 

@@ -37,6 +37,7 @@ function track(
     mime_type: "audio/mpeg",
     source_type: "upload",
     is_available: true,
+    recording_key: id,
     created_at: "2026-11-08T00:00:00Z",
   };
 }

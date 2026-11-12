@@ -83,6 +83,7 @@ TRAILING_DESCRIPTOR = re.compile(
 )
 ARTIST_TOPIC_SUFFIX = re.compile(r"\s*-\s*topic\s*$", re.IGNORECASE)
 SIMILAR_LIMIT = 20
+SIMILAR_LIMIT_MAX = 50
 RESULT_LIMIT = 20
 MAX_RECOMMENDATION_HISTORY = 10
 MAX_RECOMMENDATION_EXCLUDE = 200
@@ -103,6 +104,14 @@ class SimilarTrack:
 class SimilarArtist:
     name: str
     match: float
+
+
+@dataclass(frozen=True)
+class TrackInfo:
+    duration_seconds: int | None
+    listeners: int | None
+    playcount: int | None
+    tags: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -191,7 +200,7 @@ class LastfmClient:
             {
                 "artist": artist,
                 "track": title,
-                "limit": max(1, min(limit, SIMILAR_LIMIT)),
+                "limit": max(1, min(limit, SIMILAR_LIMIT_MAX)),
                 "autocorrect": 1,
             },
         )
@@ -237,6 +246,106 @@ class LastfmClient:
             )
         return results
 
+
+    def get_info(self, artist: str, title: str) -> TrackInfo:
+        payload = self._request(
+            "track.getinfo",
+            {
+                "artist": artist,
+                "track": title,
+                "autocorrect": 1,
+            },
+        )
+        track = payload.get("track") if isinstance(payload, dict) else None
+        if not isinstance(track, dict):
+            return TrackInfo(None, None, None, ())
+
+        raw_duration = track.get("duration")
+        try:
+            duration_seconds = (
+                max(0, round(int(raw_duration) / 1000))
+                if raw_duration is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            duration_seconds = None
+
+        def _integer(value: object) -> int | None:
+            try:
+                return int(value) if value is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        tags_container = track.get("toptags")
+        raw_tags = (
+            tags_container.get("tag", [])
+            if isinstance(tags_container, dict)
+            else []
+        )
+        if isinstance(raw_tags, dict):
+            raw_tags = [raw_tags]
+        tags = tuple(
+            str(item.get("name")).strip()
+            for item in raw_tags
+            if isinstance(item, dict)
+            and isinstance(item.get("name"), str)
+            and item.get("name").strip()
+        )
+        return TrackInfo(
+            duration_seconds=duration_seconds,
+            listeners=_integer(track.get("listeners")),
+            playcount=_integer(track.get("playcount")),
+            tags=tags,
+        )
+
+    def get_tag_top_tracks(
+        self,
+        tag: str,
+        limit: int = 20,
+    ) -> list[SimilarTrack]:
+        payload = self._request(
+            "tag.gettoptracks",
+            {
+                "tag": tag,
+                "limit": max(1, min(limit, SIMILAR_LIMIT_MAX)),
+            },
+        )
+        container = payload.get("tracks") or payload.get("toptracks") or {}
+        raw_tracks = (
+            container.get("track", [])
+            if isinstance(container, dict)
+            else []
+        )
+        if isinstance(raw_tracks, dict):
+            raw_tracks = [raw_tracks]
+
+        results: list[SimilarTrack] = []
+        for item in raw_tracks[:limit]:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            artist_data = item.get("artist")
+            artist_name = (
+                artist_data.get("name")
+                if isinstance(artist_data, dict)
+                else artist_data
+            )
+            if not isinstance(name, str) or not name.strip():
+                continue
+            if not isinstance(artist_name, str) or not artist_name.strip():
+                continue
+            try:
+                match = float(item.get("match") or 0)
+            except (TypeError, ValueError):
+                match = 0.0
+            results.append(
+                SimilarTrack(
+                    title=name.strip(),
+                    artist=artist_name.strip(),
+                    match=max(0.0, min(match, 1.0)) if match else 0.0,
+                )
+            )
+        return results
 
     def get_similar_artists(
         self,
@@ -424,6 +533,11 @@ def _identity_metadata(artist: str, title: str) -> tuple[str, str]:
         _remove_descriptor_brackets(cleaned_title)
     )
     return cleaned_artist or artist.strip(), cleaned_title or title.strip()
+
+
+def canonical_metadata(artist: str, title: str) -> tuple[str, str]:
+    """Return the cleaned artist and title used for cross-source identity."""
+    return _identity_metadata(artist, title)
 
 
 def song_identity(artist: str, title: str) -> str:

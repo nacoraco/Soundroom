@@ -25,6 +25,7 @@ from ..db import get_db
 from ..deps import AuthContext, get_current_auth, require_csrf, require_roles
 from ..metadata import InvalidMp3Error, read_mp3_metadata
 from ..models import Album, Artist, Track, TrackSource, UserRole
+from ..recommendations import canonical_metadata, song_identity
 from ..schemas import TrackOut, TrackPage
 from ..storage import EmptyUpload, UploadTooLarge, save_upload_to_temp
 from ..streaming import InvalidRange, parse_range_header
@@ -71,6 +72,7 @@ def _track_out(track: Track, artist: Artist, album: Album | None) -> TrackOut:
         mime_type=track.mime_type,
         source_type=track.source_type,
         is_available=track.is_available,
+        recording_key=track.recording_key,
         created_at=track.created_at,
     )
 
@@ -407,11 +409,19 @@ async def upload_track(
         final_path.parent.mkdir(parents=True, exist_ok=True)
         os.replace(temp_path, final_path)
 
+        canonical_artist, canonical_title = canonical_metadata(
+            final_artist or "", final_title or ""
+        )
         track = Track(
             artist_id=artist_obj.id,
             album_id=album_obj.id if album_obj is not None else None,
             title=final_title,
             normalized_title=normalized_title,
+            canonical_artist=canonical_artist,
+            canonical_title=canonical_title,
+            recording_key=song_identity(
+                final_artist or "", final_title or ""
+            ),
             duration_seconds=metadata.duration_seconds,
             file_path=relative_path,
             mime_type="audio/mpeg",

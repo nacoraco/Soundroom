@@ -2,8 +2,8 @@ import type { PlayerTrack } from "./playerState";
 
 export const MAX_RECOMMENDATION_HISTORY = 100;
 export const RECOMMENDATION_COMPLETION_THRESHOLD = 0.5;
-export const RECOMMENDATION_BATCH_SIZE = 1;
-export const RECOMMENDATION_BUFFER_SIZE = 2;
+export const RECOMMENDATION_BATCH_SIZE = 10;
+export const RECOMMENDATION_BUFFER_SIZE = 3;
 export const MAX_RECOMMENDATION_SEEDS = 10;
 export const RECENT_RECOMMENDATION_SEEDS = 5;
 export const RANDOM_QUALIFYING_SEEDS = 5;

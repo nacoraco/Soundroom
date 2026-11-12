@@ -3,7 +3,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
-from .models import RipJobStatus, TrackSource, UserRole
+from .models import DiscoveryLevel, RipJobStatus, TrackSource, UserRole
 from .recommendations import (
     MAX_RECOMMENDATION_EXCLUDE,
     MAX_RECOMMENDATION_HISTORY,
@@ -86,6 +86,7 @@ class TrackOut(BaseModel):
     mime_type: str
     source_type: TrackSource
     is_available: bool
+    recording_key: str = ""
     created_at: datetime
 
 
@@ -142,6 +143,12 @@ class ImportJobCreate(BaseModel):
     query: str = Field(min_length=3, max_length=300)
     candidate: ImportCandidateSelection | None = None
     force_llm_approval: bool = False
+    source_artist: str | None = Field(default=None, max_length=200)
+    source_title: str | None = Field(default=None, max_length=300)
+    expected_duration_seconds: int | None = Field(
+        default=None, ge=1, le=86400
+    )
+    recording_key: str | None = Field(default=None, max_length=400)
 
     @field_validator("query")
     @classmethod
@@ -150,6 +157,14 @@ class ImportJobCreate(BaseModel):
         if len(value) < 3:
             raise ValueError("Enter at least 3 characters")
         return value
+
+    @field_validator("source_artist", "source_title", "recording_key")
+    @classmethod
+    def strip_source_value(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
 
 
 class ImportPreviewCandidate(BaseModel):
@@ -201,12 +216,17 @@ class ImportJobOut(BaseModel):
     candidate_title: str | None
     candidate_artist: str | None
     candidate_duration_seconds: int | None
+    source_artist: str | None = None
+    source_title: str | None = None
+    expected_duration_seconds: int | None = None
+    recording_key: str | None = None
     force_llm_approval: bool
     track_id: UUID | None
     error_message: str | None
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+
 
 class PlaylistCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
@@ -313,3 +333,77 @@ class RadioRequest(BaseModel):
 
 class RadioResponse(BaseModel):
     recommendations: list[DiscoverRecommendation]
+
+
+class RadioSessionUpdate(BaseModel):
+    enabled: bool | None = None
+    seed_track_id: UUID | None = None
+    discovery_level: DiscoveryLevel | None = None
+    reset_seed: bool = False
+
+
+class RadioSessionOut(BaseModel):
+    enabled: bool
+    discovery_level: DiscoveryLevel
+    seed_track: TrackOut | None
+    qualified_seed_count: int
+
+
+class RadioNextRequest(BaseModel):
+    limit: int = Field(default=10, ge=1, le=20)
+    exclude: list[str] = Field(default_factory=list, max_length=200)
+    discovery_level: DiscoveryLevel | None = None
+
+
+class RadioRecommendationOut(BaseModel):
+    title: str
+    artist: str
+    recording_key: str
+    local_track: TrackOut | None
+    score: float
+    seed_count: int
+    expected_duration_seconds: int | None
+    reason: str | None
+    sources: list[str]
+
+
+class RadioNextResponse(BaseModel):
+    recommendations: list[RadioRecommendationOut]
+    seed_count: int
+    qualified_seed_count: int
+    discovery_level: DiscoveryLevel
+    exhausted: bool
+
+
+class RadioFeedbackCreate(BaseModel):
+    recording_key: str | None = Field(default=None, max_length=400)
+    track_id: UUID | None = None
+    title: str | None = Field(default=None, max_length=300)
+    artist: str | None = Field(default=None, max_length=200)
+    verdict: str = Field(pattern=r"^(reject|like|clear)$")
+    reason: str | None = Field(
+        default=None,
+        pattern=r"^(skip|remove|not_now|never|failed|manual)$",
+    )
+
+    @field_validator("recording_key", "title", "artist")
+    @classmethod
+    def strip_feedback_value(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+
+class RadioListenCreate(BaseModel):
+    track_id: UUID
+    played_seconds: int = Field(ge=0, le=86400)
+    duration_seconds: int = Field(ge=1, le=86400)
+    skipped: bool = False
+    source: str = Field(default="radio", pattern=r"^(radio|manual|playlist)$")
+    started_at: datetime | None = None
+
+
+class RadioListenOut(BaseModel):
+    completion_ratio: float
+    qualified: bool

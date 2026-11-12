@@ -3157,6 +3157,12 @@ tbody tr:hover {
   white-space: nowrap;
 }
 
+.player-queue-copy .player-queue-reason {
+  color: #b6a27a;
+  font-size: 0.58rem;
+  letter-spacing: 0.02em;
+}
+
 .player-queue-duration {
   color: #819489;
   font-size: 0.54rem;

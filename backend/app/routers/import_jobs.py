@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -8,7 +9,14 @@ from sqlalchemy.orm import Session
 from ..db import get_db
 from ..deps import AuthContext, get_current_auth, require_csrf
 from ..importer import rank_candidates, search_candidates
-from ..models import ACTIVE_RIP_JOB_STATUSES, RipJob, RipJobStatus
+from ..models import (
+    ACTIVE_RIP_JOB_STATUSES,
+    RipJob,
+    RipJobStatus,
+    Track,
+    UserRole,
+)
+from ..recommendations import canonical_metadata, song_identity
 from ..schemas import (
     ImportJobConfig,
     ImportJobCreate,
@@ -136,6 +144,58 @@ def create_import_job(
             f"{payload.candidate.video_id}"
         )
 
+    source_artist = payload.source_artist
+    source_title = payload.source_title
+    if source_artist and source_title:
+        source_artist, source_title = canonical_metadata(
+            source_artist, source_title
+        )
+    recording_key = (
+        payload.recording_key
+        or (
+            song_identity(source_artist, source_title)
+            if source_artist and source_title
+            else None
+        )
+    )
+
+    if recording_key:
+        existing_track = db.scalar(
+            select(Track).where(
+                Track.recording_key == recording_key,
+                Track.is_available.is_(True),
+            )
+        )
+        if existing_track is not None:
+            completed = RipJob(
+                requested_by_user_id=ctx.user.id,
+                query_text=payload.query,
+                normalized_query=normalized_query,
+                status=RipJobStatus.completed,
+                source_artist=source_artist,
+                source_title=source_title,
+                expected_duration_seconds=payload.expected_duration_seconds,
+                recording_key=recording_key,
+                track_id=existing_track.id,
+                finished_at=datetime.now(timezone.utc),
+            )
+            db.add(completed)
+            db.commit()
+            db.refresh(completed)
+            return completed
+
+        existing_key = db.scalar(
+            select(RipJob)
+            .where(
+                RipJob.recording_key == recording_key,
+                RipJob.status.in_(ACTIVE_RIP_JOB_STATUSES),
+            )
+            .order_by(RipJob.created_at.desc())
+            .limit(1)
+        )
+        if existing_key is not None:
+            return existing_key
+
     existing_statement = select(RipJob).where(
         RipJob.normalized_query == normalized_query,
         RipJob.status.in_(ACTIVE_RIP_JOB_STATUSES),
@@ -160,6 +220,10 @@ def create_import_job(
         normalized_query=normalized_query,
         status=RipJobStatus.queued,
         force_llm_approval=payload.force_llm_approval,
+        source_artist=source_artist,
+        source_title=source_title,
+        expected_duration_seconds=payload.expected_duration_seconds,
+        recording_key=recording_key,
     )
     if payload.candidate is not None and candidate_url is not None:
         job.candidate_url = candidate_url
@@ -184,4 +248,38 @@ def get_import_job(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Import job not found.",
         )
+    return job
+
+
+@router.post("/{job_id}/cancel", response_model=ImportJobOut)
+def cancel_import_job(
+    job_id: UUID,
+    ctx: AuthContext = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> RipJob:
+    job = db.get(RipJob, job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Import job not found.",
+        )
+    if (
+        job.requested_by_user_id != ctx.user.id
+        and ctx.user.role not in (UserRole.editor, UserRole.admin)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Insufficient permissions",
+        )
+    if job.status in (
+        RipJobStatus.completed,
+        RipJobStatus.failed,
+        RipJobStatus.cancelled,
+    ):
+        return job
+    job.status = RipJobStatus.cancelled
+    job.finished_at = datetime.now(timezone.utc)
+    db.add(job)
+    db.commit()
+    db.refresh(job)
     return job

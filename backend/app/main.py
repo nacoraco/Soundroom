@@ -11,6 +11,7 @@ from .routers import (
     health,
     import_jobs,
     playlists,
+    radio,
     tracks,
 )
 
@@ -34,6 +35,7 @@ def create_app() -> FastAPI:
     app.include_router(import_jobs.router)
     app.include_router(editor_imports.router)
     app.include_router(discover.router)
+    app.include_router(radio.router)
     app.include_router(playlists.router)
     app.include_router(tracks.router)
     return app

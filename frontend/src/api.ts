@@ -13,6 +13,12 @@ import type {
   PlaylistCreateInput,
   PlaylistDetail,
   PlaylistSummary,
+  RadioBatch,
+  RadioFeedbackInput,
+  RadioListenInput,
+  RadioListenResult,
+  RadioSession,
+  RadioSessionUpdateInput,
   Track,
   TrackPage,
   User,
@@ -207,6 +213,50 @@ export async function discoverRadio(
   });
 }
 
+export async function getRadioSession(): Promise<RadioSession> {
+  return request<RadioSession>("/api/radio/session");
+}
+
+export async function updateRadioSession(
+  input: RadioSessionUpdateInput,
+): Promise<RadioSession> {
+  return request<RadioSession>("/api/radio/session", {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function getRadioBatch(options?: {
+  limit?: number;
+  exclude?: string[];
+}): Promise<RadioBatch> {
+  return request<RadioBatch>("/api/radio/next", {
+    method: "POST",
+    body: JSON.stringify({
+      limit: options?.limit ?? 10,
+      exclude: options?.exclude ?? [],
+    }),
+  });
+}
+
+export async function postRadioFeedback(
+  input: RadioFeedbackInput,
+): Promise<{ recording_key: string | null }> {
+  return request<{ recording_key: string | null }>("/api/radio/feedback", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function postRadioListen(
+  input: RadioListenInput,
+): Promise<RadioListenResult> {
+  return request<RadioListenResult>("/api/radio/listen", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
 export async function listPlaylists(): Promise<PlaylistSummary[]> {
   return request<PlaylistSummary[]>("/api/playlists");
 }
@@ -303,15 +353,31 @@ export async function previewImportCandidates(
 export async function createImportJob(
   query: string,
   candidate?: ImportCandidateSelectionInput,
-  forceLlmApproval = false,
+  options?: {
+    forceLlmApproval?: boolean;
+    sourceArtist?: string;
+    sourceTitle?: string;
+    expectedDurationSeconds?: number;
+    recordingKey?: string;
+  },
 ): Promise<ImportJob> {
   return request<ImportJob>("/api/import-jobs", {
     method: "POST",
     body: JSON.stringify({
       query,
       candidate,
-      force_llm_approval: forceLlmApproval,
+      force_llm_approval: options?.forceLlmApproval ?? false,
+      source_artist: options?.sourceArtist ?? null,
+      source_title: options?.sourceTitle ?? null,
+      expected_duration_seconds: options?.expectedDurationSeconds ?? null,
+      recording_key: options?.recordingKey ?? null,
     }),
+  });
+}
+
+export async function cancelImportJob(id: string): Promise<ImportJob> {
+  return request<ImportJob>(`/api/import-jobs/${id}/cancel`, {
+    method: "POST",
   });
 }
 

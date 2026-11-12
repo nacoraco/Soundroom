@@ -104,7 +104,11 @@ export function DiscoverPage() {
           const job = await createImportJob(
             `${recommendation.artist} ${recommendation.title}`.trim(),
             undefined,
-            true,
+            {
+              forceLlmApproval: true,
+              sourceArtist: recommendation.artist,
+              sourceTitle: recommendation.title,
+            },
           );
           track = await waitForImport(job.id);
         }

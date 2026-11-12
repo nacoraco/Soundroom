@@ -34,6 +34,7 @@ def _track_out(track: Track) -> TrackOut:
         mime_type=track.mime_type,
         source_type=track.source_type,
         is_available=track.is_available,
+        recording_key=track.recording_key,
         created_at=track.created_at,
     )
 

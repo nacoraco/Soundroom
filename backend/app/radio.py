@@ -43,8 +43,9 @@ RECENT_EXCLUDE_LIMIT = 100
 REJECTION_TTL_DAYS = 30
 NOT_NOW_TTL_DAYS = 7
 FAILED_TTL_DAYS = 1
-ARTIST_COOLDOWN_REJECTIONS = 2
-ARTIST_COOLDOWN_DAYS = 7
+ARTIST_PENALTY_LOOKBACK_DAYS = 30
+ARTIST_PENALTY_PER_REJECTION = 0.25
+ARTIST_PENALTY_FLOOR = 0.35
 DEFAULT_BATCH_LIMIT = 10
 ARTIST_BATCH_CAP = 2
 RELAXED_ARTIST_CAP = 3
@@ -204,19 +205,13 @@ def select_seeds(
             db, user_id, FALLBACK_COMPLETION_MIN, FALLBACK_SEED_LIMIT
         )
 
-    rejected_keys, blocked_artists = active_feedback(db, user_id)
+    rejected_keys, _artist_penalties = active_feedback(db, user_id)
     recent = [
-        seed
-        for seed in recent
-        if seed.recording_key not in rejected_keys
-        and normalize_text(seed.artist) not in blocked_artists
+        seed for seed in recent if seed.recording_key not in rejected_keys
     ]
 
     anchor = _anchor_seed(db, session)
-    if anchor is not None and (
-        anchor.recording_key in rejected_keys
-        or normalize_text(anchor.artist) in blocked_artists
-    ):
+    if anchor is not None and anchor.recording_key in rejected_keys:
         anchor = None
     selected: list[RadioSeed] = []
     seen: set[str] = set()
@@ -244,7 +239,12 @@ def select_seeds(
 def active_feedback(
     db: Session,
     user_id: UUID,
-) -> tuple[set[str], set[str]]:
+) -> tuple[set[str], dict[str, float]]:
+    """Return rejected recordings and soft per-artist score penalties.
+
+    Artists are never hard-blocked. A recent rejection only downranks that
+    artist so other recordings by them can still surface.
+    """
     now = datetime.now(timezone.utc)
     rows = db.scalars(
         select(RadioFeedback).where(
@@ -256,18 +256,21 @@ def active_feedback(
             ),
         )
     ).all()
-    cutoff = now - timedelta(days=ARTIST_COOLDOWN_DAYS)
+    cutoff = now - timedelta(days=ARTIST_PENALTY_LOOKBACK_DAYS)
     artist_counts = Counter(
         normalize_text(row.artist)
         for row in rows
         if _as_utc(row.created_at) >= cutoff
     )
-    blocked_artists = {
-        artist
+    artist_penalties = {
+        artist: max(
+            ARTIST_PENALTY_FLOOR,
+            1.0 - ARTIST_PENALTY_PER_REJECTION * count,
+        )
         for artist, count in artist_counts.items()
-        if artist and count >= ARTIST_COOLDOWN_REJECTIONS
+        if artist
     }
-    return {row.recording_key for row in rows}, blocked_artists
+    return {row.recording_key for row in rows}, artist_penalties
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -533,7 +536,6 @@ def filter_candidates(
     candidates: dict[str, RadioCandidate],
     seeds: list[RadioSeed],
     rejected_keys: set[str],
-    blocked_artists: set[str],
     recent_keys: set[str],
     queue_keys: set[str],
     min_match: float,
@@ -544,8 +546,6 @@ def filter_candidates(
         if key in seed_keys:
             continue
         if key in rejected_keys or key in recent_keys or key in queue_keys:
-            continue
-        if normalize_text(candidate.artist) in blocked_artists:
             continue
         if (
             candidate.sources == {"similar"}
@@ -560,12 +560,17 @@ def rank_candidates(
     candidates: dict[str, RadioCandidate],
     profile: DiscoveryProfile,
     rng: random.Random | None = None,
+    artist_penalties: dict[str, float] | None = None,
 ) -> list[RadioCandidate]:
     rng = rng or random.Random()
+    penalties = artist_penalties or {}
     ranked = list(candidates.values())
     for candidate in ranked:
-        candidate.rank_score = candidate.score * rng.uniform(
-            1 - profile.jitter, 1 + profile.jitter
+        penalty = penalties.get(normalize_text(candidate.artist), 1.0)
+        candidate.rank_score = (
+            candidate.score
+            * penalty
+            * rng.uniform(1 - profile.jitter, 1 + profile.jitter)
         )
     return sorted(
         ranked,
@@ -665,7 +670,7 @@ def build_radio_batch(
     if not seeds:
         return [], 0
 
-    rejected_keys, blocked_artists = active_feedback(db, user_id)
+    rejected_keys, artist_penalties = active_feedback(db, user_id)
     recent_keys = recent_listen_keys(db, user_id)
     queue_keys = {key for key in (exclude or []) if key}
     local_index = local_track_index(db)
@@ -675,12 +680,16 @@ def build_radio_batch(
         candidates,
         seeds,
         rejected_keys,
-        blocked_artists,
         recent_keys,
         queue_keys,
         profile.min_match,
     )
-    ranked = rank_candidates(filtered, profile, rng=rng)
+    ranked = rank_candidates(
+        filtered,
+        profile,
+        rng=rng,
+        artist_penalties=artist_penalties,
+    )
     selected = select_batch(ranked, limit, profile)
     enrich_expected_duration(db, client, selected)
     return selected, len(seeds)

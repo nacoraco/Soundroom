@@ -296,32 +296,74 @@ def test_artist_cap_keeps_at_most_two_per_ten(db_session):
     assert {candidate.artist for candidate in selected} == {"Same Artist"}
 
 
-def test_feedback_blocks_artist_after_two_rejections(db_session):
+def test_feedback_penalizes_artist_without_blocking(db_session):
     user = admin(db_session)
     for index in range(2):
         set_feedback(
             db_session,
             user.id,
             recording_key=f"reject-{index}",
-            artist="Blocked Artist",
+            artist="Penalized Artist",
             title=f"Rejected {index}",
             verdict="reject",
             reason="skip",
         )
-    rejected_keys, blocked_artists = active_feedback(db_session, user.id)
+    rejected_keys, artist_penalties = active_feedback(db_session, user.id)
     assert len(rejected_keys) == 2
-    assert normalize_text("Blocked Artist") in blocked_artists
+    assert artist_penalties[normalize_text("Penalized Artist")] == 0.5
 
     set_feedback(
         db_session,
         user.id,
         recording_key="reject-0",
-        artist="Blocked Artist",
+        artist="Penalized Artist",
         title="Rejected 0",
         verdict="clear",
     )
-    rejected_keys, _ = active_feedback(db_session, user.id)
+    rejected_keys, artist_penalties = active_feedback(db_session, user.id)
     assert "reject-0" not in rejected_keys
+    assert artist_penalties[normalize_text("Penalized Artist")] == 0.75
+
+
+def test_penalized_artist_is_not_hard_blocked(db_session):
+    user = admin(db_session)
+    seed = make_track(db_session, "Seed Song", "Seed Artist")
+    add_listen(db_session, seed, 0.95)
+    for index in range(2):
+        set_feedback(
+            db_session,
+            user.id,
+            recording_key=f"rejected-{index}",
+            artist="Penalized Artist",
+            title=f"Rejected {index}",
+            verdict="reject",
+            reason="skip",
+        )
+    client = FakeLastfm(
+        similar={
+            ("Seed Artist", "Seed Song"): [
+                SimilarTrack("Another Song", "Penalized Artist", 0.9),
+                SimilarTrack("Different Song", "Different Artist", 0.9),
+            ]
+        }
+    )
+    session = get_or_create_session(db_session, user.id)
+    session.seed_track_id = seed.id
+    db_session.add(session)
+    db_session.commit()
+    db_session.refresh(session)
+
+    selected, _ = build_radio_batch(
+        db_session,
+        client,
+        user.id,
+        session,
+        limit=10,
+        rng=random.Random(4),
+    )
+    titles = {candidate.title for candidate in selected}
+    assert "Another Song" in titles
+    assert "Different Song" in titles
 
 
 def test_record_listen_clears_rejection_after_completion(db_session):

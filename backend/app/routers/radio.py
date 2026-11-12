@@ -100,8 +100,7 @@ def update_session(
     db: Session = Depends(get_db),
 ) -> RadioSessionOut:
     session = get_or_create_session(db, ctx.user.id)
-    if payload.enabled is not None:
-        session.enabled = payload.enabled
+    session.enabled = True
     if payload.discovery_level is not None:
         session.discovery_level = payload.discovery_level
     if payload.reset_seed:
@@ -130,18 +129,18 @@ def next_batch(
     session = get_or_create_session(db, ctx.user.id)
     if payload.discovery_level is not None:
         session.discovery_level = payload.discovery_level
+    if payload.seed_track_id is not None:
+        seed_track = db.get(Track, payload.seed_track_id)
+        if seed_track is None or not seed_track.is_available:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Seed track not found",
+            )
+        session.seed_track_id = seed_track.id
+    if payload.discovery_level is not None or payload.seed_track_id is not None:
         db.add(session)
         db.commit()
         db.refresh(session)
-
-    if not session.enabled:
-        return RadioNextResponse(
-            recommendations=[],
-            seed_count=0,
-            qualified_seed_count=qualified_seed_count(db, ctx.user.id),
-            discovery_level=session.discovery_level,
-            exhausted=True,
-        )
 
     selected, seed_count = build_radio_batch(
         db,

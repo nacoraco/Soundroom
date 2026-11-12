@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { usePlayer } from "../player";
 import type { PlayerTrack } from "../playerState";
@@ -37,16 +37,19 @@ export function PlayerExpanded() {
     toggleMute,
     queuedImports,
     dismissQueuedImport,
-    radioEnabled,
     radioExhausted,
     discoveryLevel,
-    toggleRadio,
     setDiscoveryLevel,
     canUndoSkip,
     undoLastSkip,
     dismissRecommendation,
   } = usePlayer();
   const [queueOpen, setQueueOpen] = useState(false);
+  const [dismissMenuTrackId, setDismissMenuTrackId] = useState<string | null>(
+    null,
+  );
+  const [confirmNever, setConfirmNever] = useState(false);
+  const dismissMenuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!queueOpen) {
@@ -60,6 +63,35 @@ export function PlayerExpanded() {
     }
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [queueOpen]);
+
+  useEffect(() => {
+    if (!dismissMenuTrackId) {
+      return;
+    }
+    function onPointerDown(event: PointerEvent) {
+      const target = event.target as Element | null;
+      if (target?.closest("[data-dismiss-menu-trigger]")) {
+        return;
+      }
+      if (
+        dismissMenuRef.current &&
+        !dismissMenuRef.current.contains(event.target as Node)
+      ) {
+        setDismissMenuTrackId(null);
+        setConfirmNever(false);
+      }
+    }
+    document.addEventListener("pointerdown", onPointerDown);
+    return () =>
+      document.removeEventListener("pointerdown", onPointerDown);
+  }, [dismissMenuTrackId]);
+
+  useEffect(() => {
+    if (!queueOpen) {
+      setDismissMenuTrackId(null);
+      setConfirmNever(false);
+    }
   }, [queueOpen]);
 
   if (!state.expanded || !currentTrack) {
@@ -145,6 +177,87 @@ export function PlayerExpanded() {
             {formatTime(track.duration_seconds)}
           </span>
         </button>
+        {isCurrent && track.origin === "auto" && !track.pending && (
+          <>
+            <button
+              type="button"
+              className="player-queue-more"
+              data-dismiss-menu-trigger
+              onClick={(event) => {
+                event.stopPropagation();
+                setConfirmNever(false);
+                setDismissMenuTrackId((current) =>
+                  current === track.id ? null : track.id,
+                );
+              }}
+              aria-label="Recommendation options"
+              aria-haspopup="menu"
+              aria-expanded={dismissMenuTrackId === track.id}
+              title="Recommendation options"
+            >
+              ···
+            </button>
+            {dismissMenuTrackId === track.id && (
+              <div
+                className="player-queue-menu"
+                role="menu"
+                ref={dismissMenuRef}
+                onClick={(event) => event.stopPropagation()}
+              >
+                {confirmNever ? (
+                  <>
+                    <p className="player-queue-menu-title">
+                      Never recommend this recording again?
+                    </p>
+                    <button
+                      type="button"
+                      className="player-queue-menu-button is-danger"
+                      role="menuitem"
+                      onClick={() => {
+                        dismissRecommendation(track, "never");
+                        setDismissMenuTrackId(null);
+                        setConfirmNever(false);
+                      }}
+                    >
+                      Yes, never
+                    </button>
+                    <button
+                      type="button"
+                      className="player-queue-menu-button"
+                      role="menuitem"
+                      onClick={() => setConfirmNever(false)}
+                    >
+                      Cancel
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      className="player-queue-menu-button"
+                      role="menuitem"
+                      onClick={() => {
+                        dismissRecommendation(track, "not_now");
+                        setDismissMenuTrackId(null);
+                      }}
+                    >
+                      <span>Not now</span>
+                      <span className="player-queue-menu-hint">7 days</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="player-queue-menu-button is-danger"
+                      role="menuitem"
+                      onClick={() => setConfirmNever(true)}
+                    >
+                      Never recommend
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+          </>
+        )}
         {(!track.pending || isFailedPending) && (
           <button
             type="button"
@@ -411,43 +524,9 @@ export function PlayerExpanded() {
                   Undo skip
                 </button>
               )}
-              {currentTrack?.origin === "auto" && !currentTrack.pending && (
-                <>
-                  <button
-                    type="button"
-                    className="player-queue-clear"
-                    onClick={() =>
-                      dismissRecommendation(currentTrack, "not_now")
-                    }
-                    title="Hide this recommendation for 7 days"
-                  >
-                    Not now
-                  </button>
-                  <button
-                    type="button"
-                    className="player-queue-clear"
-                    onClick={() =>
-                      dismissRecommendation(currentTrack, "never")
-                    }
-                    title="Never recommend this recording again"
-                  >
-                    Never
-                  </button>
-                </>
-              )}
-              <button
-                type="button"
-                className="player-queue-clear"
-                onClick={toggleRadio}
-                aria-pressed={radioEnabled}
-                aria-label={
-                  radioEnabled ? "Turn radio off" : "Turn radio on"
-                }
-              >
-                Radio {radioEnabled ? "on" : "off"}
-              </button>
+              <span className="player-queue-radio-label">Radio</span>
               <select
-                className="player-queue-clear"
+                className="player-queue-select"
                 value={discoveryLevel}
                 onChange={(event) =>
                   setDiscoveryLevel(
@@ -527,7 +606,7 @@ export function PlayerExpanded() {
                 </section>
               )}
 
-              {radioEnabled && radioExhausted && (
+              {radioExhausted && (
                 <p className="player-queue-empty">
                   Radio is out of new candidates right now.
                 </p>
@@ -575,6 +654,17 @@ export function PlayerExpanded() {
                 : "Queue persists while you browse"}
             </span>
           </div>
+
+          {dismissMenuTrackId && (
+            <div
+              className="player-queue-menu-backdrop"
+              aria-hidden="true"
+              onClick={() => {
+                setDismissMenuTrackId(null);
+                setConfirmNever(false);
+              }}
+            />
+          )}
         </aside>
 
         <button

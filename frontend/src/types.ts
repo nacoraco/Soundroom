@@ -206,7 +206,6 @@ export interface RadioSession {
 }
 
 export interface RadioSessionUpdateInput {
-  enabled?: boolean;
   seed_track_id?: string;
   discovery_level?: DiscoveryLevel;
   reset_seed?: boolean;

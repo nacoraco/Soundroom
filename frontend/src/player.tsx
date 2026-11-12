@@ -92,10 +92,8 @@ interface PlayerContextValue {
   setVolume: (volume: number) => void;
   toggleMute: () => void;
   dismissError: () => void;
-  radioEnabled: boolean;
   radioExhausted: boolean;
   discoveryLevel: DiscoveryLevel;
-  toggleRadio: () => void;
   setDiscoveryLevel: (level: DiscoveryLevel) => void;
   canUndoSkip: boolean;
   undoLastSkip: () => void;
@@ -118,14 +116,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const lastPlayTokenRef = useRef(state.playToken);
   const importRequestRef = useRef(0);
   const aliveRef = useRef(true);
-  const [radioEnabled, setRadioEnabled] = useState(true);
   const [radioExhausted, setRadioExhausted] = useState(false);
   const [radioFetchTick, setRadioFetchTick] = useState(0);
   const [canUndoSkip, setCanUndoSkip] = useState(false);
   const lastSkippedRef = useRef<PlayerTrack | null>(null);
   const [discoveryLevel, setDiscoveryLevelState] =
     useState<DiscoveryLevel>("balanced");
-  const radioEnabledRef = useRef(true);
   const radioRequestRef = useRef(0);
   const radioInFlightRef = useRef(false);
   const radioEmptyRetriesRef = useRef(0);
@@ -160,8 +156,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         if (cancelled) {
           return;
         }
-        radioEnabledRef.current = session.enabled;
-        setRadioEnabled(session.enabled);
         setDiscoveryLevelState(session.discovery_level);
       })
       .catch(() => {
@@ -264,6 +258,42 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         source: track.origin === "auto" ? "radio" : "manual",
       }).catch(() => {
         // Listening history is best-effort; playback must not be blocked.
+      });
+    },
+    [],
+  );
+
+  const forgiveRecommendation = useCallback(
+    (track: PlayerTrack | Track) => {
+      const pending = (track as PlayerTrack).pending;
+      if (pending) {
+        return;
+      }
+      const key =
+        track.recording_key ||
+        recommendationKey(track.artist_name, track.title);
+      if (!key) {
+        return;
+      }
+      sessionRejectedKeysRef.current.delete(key);
+      const skipped = lastSkippedRef.current;
+      if (skipped) {
+        const skippedKey =
+          skipped.recording_key ||
+          recommendationKey(skipped.artist_name, skipped.title);
+        if (skippedKey === key) {
+          lastSkippedRef.current = null;
+          setCanUndoSkip(false);
+        }
+      }
+      void postRadioFeedback({
+        recording_key: key,
+        track_id: track.id,
+        title: track.title,
+        artist: track.artist_name,
+        verdict: "clear",
+      }).catch(() => {
+        // The local session unblock still applies.
       });
     },
     [],
@@ -780,9 +810,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const fetchRadioBatch = useCallback(
     async (requestId: number) => {
-      if (!radioEnabledRef.current) {
-        return;
-      }
       const snapshot = stateRef.current;
       const exclude = Array.from(
         new Set<string>([
@@ -803,15 +830,21 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         .filter(Boolean)
         .slice(0, MAX_RECOMMENDATION_EXCLUDE);
 
+      const current = snapshot.queue[snapshot.currentIndex];
+      const seedTrackId =
+        current && !current.pending && current.origin !== "auto"
+          ? current.id
+          : undefined;
+
       try {
         const result = await getRadioBatch({
           limit: RECOMMENDATION_BATCH_SIZE,
           exclude,
+          seedTrackId,
         });
         if (
           !aliveRef.current ||
-          requestId !== radioRequestRef.current ||
-          !radioEnabledRef.current
+          requestId !== radioRequestRef.current
         ) {
           return;
         }
@@ -864,15 +897,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const playTrack = useCallback(
     (track: Track, queue?: Track[]) => {
       flushCurrentListen();
+      forgiveRecommendation(track);
       resetRecommendationSession(track);
       dispatch({ type: "play", track, queue });
-      if (radioEnabledRef.current) {
-        void updateRadioSession({ seed_track_id: track.id }).catch(() => {
-          // The next batch can still use recent listening history.
-        });
-      }
+      void updateRadioSession({ seed_track_id: track.id }).catch(() => {
+        // The next batch can still use recent listening history.
+      });
     },
-    [flushCurrentListen, resetRecommendationSession],
+    [flushCurrentListen, forgiveRecommendation, resetRecommendationSession],
   );
 
   const startImport = useCallback(
@@ -1191,10 +1223,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const playAt = useCallback(
     (index: number) => {
+      const target = stateRef.current.queue[index];
+      if (target) {
+        forgiveRecommendation(target);
+      }
       captureCurrentProgress();
       dispatch({ type: "playAt", index });
     },
-    [captureCurrentProgress],
+    [captureCurrentProgress, forgiveRecommendation],
   );
 
   const removeAt = useCallback(
@@ -1292,29 +1328,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const dismissError = useCallback(() => {
     dispatch({ type: "error", error: null });
-  }, []);
-
-  const toggleRadio = useCallback(() => {
-    const enabled = !radioEnabledRef.current;
-    radioEnabledRef.current = enabled;
-    setRadioEnabled(enabled);
-    setRadioExhausted(false);
-    radioRequestRef.current += 1;
-    radioInFlightRef.current = false;
-    radioEmptyRetriesRef.current = 0;
-    if (!enabled) {
-      radioReserveRef.current = [];
-    }
-    const snapshot = stateRef.current;
-    const current = snapshot.queue[snapshot.currentIndex];
-    const seedTrackId =
-      enabled && current && !current.pending ? current.id : undefined;
-    void updateRadioSession({
-      enabled,
-      ...(seedTrackId ? { seed_track_id: seedTrackId } : {}),
-    }).catch(() => {
-      // Keep the local toggle responsive even if the server is unavailable.
-    });
   }, []);
 
   const setDiscoveryLevel = useCallback((level: DiscoveryLevel) => {
@@ -1697,7 +1710,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (
-      !radioEnabledRef.current ||
       radioInFlightRef.current ||
       radioExhausted ||
       !currentTrack ||
@@ -1733,7 +1745,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     discoveryLevel,
     fetchRadioBatch,
     fillRadioBuffer,
-    radioEnabled,
     radioExhausted,
     radioFetchTick,
     state.currentIndex,
@@ -1763,10 +1774,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       setVolume,
       toggleMute,
       dismissError,
-      radioEnabled,
       radioExhausted,
       discoveryLevel,
-      toggleRadio,
       setDiscoveryLevel,
       canUndoSkip,
       undoLastSkip,
@@ -1789,7 +1798,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       queueExternalRecommendation,
       queueImport,
       queuedImports,
-      radioEnabled,
       radioExhausted,
       removeAt,
       removeTrack,
@@ -1801,7 +1809,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       state,
       toggle,
       toggleMute,
-      toggleRadio,
     ],
   );
 

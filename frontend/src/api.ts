@@ -229,12 +229,14 @@ export async function updateRadioSession(
 export async function getRadioBatch(options?: {
   limit?: number;
   exclude?: string[];
+  seedTrackId?: string;
 }): Promise<RadioBatch> {
   return request<RadioBatch>("/api/radio/next", {
     method: "POST",
     body: JSON.stringify({
       limit: options?.limit ?? 10,
       exclude: options?.exclude ?? [],
+      seed_track_id: options?.seedTrackId ?? null,
     }),
   });
 }

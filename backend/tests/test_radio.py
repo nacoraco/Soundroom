@@ -153,6 +153,13 @@ class FakeLastfm:
         )
 
 
+def test_new_radio_session_is_enabled_by_default(db_session):
+    user = admin(db_session)
+    session = get_or_create_session(db_session, user.id)
+    assert session.enabled is True
+    assert session.discovery_level is DiscoveryLevel.balanced
+
+
 def test_seed_selection_uses_only_qualified_tracks_and_anchor(db_session):
     user = admin(db_session)
     seed_tracks = [
@@ -366,6 +373,60 @@ def test_penalized_artist_is_not_hard_blocked(db_session):
     assert "Different Song" in titles
 
 
+def test_manual_play_clears_never_rejection(db_session):
+    user = admin(db_session)
+    track = make_track(db_session, "Manually Played", "Artist")
+    set_feedback(
+        db_session,
+        user.id,
+        recording_key=track.recording_key,
+        artist="Artist",
+        title="Manually Played",
+        verdict="reject",
+        reason="never",
+    )
+
+    record_listen(
+        db_session,
+        user.id,
+        track=track,
+        played_seconds=1,
+        duration_seconds=track.duration_seconds,
+        skipped=True,
+        source="manual",
+    )
+
+    rejected_keys, _ = active_feedback(db_session, user.id)
+    assert track.recording_key not in rejected_keys
+
+
+def test_radio_playback_does_not_clear_never_rejection(db_session):
+    user = admin(db_session)
+    track = make_track(db_session, "Still Blocked", "Artist")
+    set_feedback(
+        db_session,
+        user.id,
+        recording_key=track.recording_key,
+        artist="Artist",
+        title="Still Blocked",
+        verdict="reject",
+        reason="never",
+    )
+
+    record_listen(
+        db_session,
+        user.id,
+        track=track,
+        played_seconds=track.duration_seconds,
+        duration_seconds=track.duration_seconds,
+        skipped=False,
+        source="radio",
+    )
+
+    rejected_keys, _ = active_feedback(db_session, user.id)
+    assert track.recording_key in rejected_keys
+
+
 def test_record_listen_clears_rejection_after_completion(db_session):
     user = admin(db_session)
     track = make_track(db_session, "Liked After All", "Artist")
@@ -532,10 +593,6 @@ def test_radio_next_endpoint_uses_fake_lastfm(client, db_session):
     authed, headers = make_authed_client(client)
     seed = make_track(db_session, "Next Seed", "Next Artist")
     add_listen(db_session, seed, 0.95)
-    session = get_or_create_session(db_session, admin(db_session).id)
-    session.seed_track_id = seed.id
-    db_session.add(session)
-    db_session.commit()
 
     fake = FakeLastfm(
         similar={

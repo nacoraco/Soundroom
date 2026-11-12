@@ -336,7 +336,6 @@ class RadioResponse(BaseModel):
 
 
 class RadioSessionUpdate(BaseModel):
-    enabled: bool | None = None
     seed_track_id: UUID | None = None
     discovery_level: DiscoveryLevel | None = None
     reset_seed: bool = False
@@ -353,6 +352,7 @@ class RadioNextRequest(BaseModel):
     limit: int = Field(default=10, ge=1, le=20)
     exclude: list[str] = Field(default_factory=list, max_length=200)
     discovery_level: DiscoveryLevel | None = None
+    seed_track_id: UUID | None = None
 
 
 class RadioRecommendationOut(BaseModel):

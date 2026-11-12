@@ -106,6 +106,11 @@ def get_or_create_session(db: Session, user_id: UUID) -> RadioSession:
         select(RadioSession).where(RadioSession.user_id == user_id)
     )
     if session is not None:
+        if not session.enabled:
+            session.enabled = True
+            db.add(session)
+            db.commit()
+            db.refresh(session)
         return session
     session = RadioSession(
         user_id=user_id,
@@ -811,7 +816,17 @@ def record_listen(
         source=source,
     )
     db.add(listen)
-    if completion >= SEED_COMPLETION_MIN:
+    if source == "manual":
+        existing = db.scalar(
+            select(RadioFeedback).where(
+                RadioFeedback.user_id == user_id,
+                RadioFeedback.recording_key == listen.recording_key,
+                RadioFeedback.verdict == RadioFeedbackVerdict.reject,
+            )
+        )
+        if existing is not None:
+            db.delete(existing)
+    elif completion >= SEED_COMPLETION_MIN:
         existing = db.scalar(
             select(RadioFeedback).where(
                 RadioFeedback.user_id == user_id,

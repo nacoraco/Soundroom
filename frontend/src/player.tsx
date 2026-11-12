@@ -174,6 +174,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const queueMutationRef = useRef(0);
   const queueMutationSeqRef = useRef(0);
   const lastAppliedRevisionRef = useRef(-1);
+  const lastHydratedCurrentRef = useRef<string | null>(null);
+  const resumePositionRef = useRef(0);
   const stateRef = useRef(state);
   stateRef.current = state;
   const queryClient = useQueryClient();
@@ -224,6 +226,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         lastAppliedRevisionRef.current,
         queueState.revision,
       );
+      if (queueState.current_item_id !== lastHydratedCurrentRef.current) {
+        lastHydratedCurrentRef.current = queueState.current_item_id;
+        resumePositionRef.current = Math.max(
+          0,
+          queueState.position_seconds,
+        );
+      }
       queryClient.setQueryData(["queue"], queueState);
       dispatch({
         type: "hydrate",
@@ -1478,12 +1487,26 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
             duration: event.currentTarget.duration,
           })
         }
-        onLoadedMetadata={(event) =>
+        onLoadedMetadata={(event) => {
+          const audio = event.currentTarget;
           dispatch({
             type: "duration",
-            duration: event.currentTarget.duration,
-          })
-        }
+            duration: audio.duration,
+          });
+          if (resumePositionRef.current > 0) {
+            const target = Math.min(
+              resumePositionRef.current,
+              Math.max(0, audio.duration - 0.5),
+            );
+            try {
+              audio.currentTime = target;
+            } catch {
+              // Metadata is not ready; start from the beginning.
+            }
+            resumePositionRef.current = 0;
+            dispatch({ type: "seek", time: target });
+          }
+        }}
         onTimeUpdate={(event) =>
           dispatch({
             type: "time",

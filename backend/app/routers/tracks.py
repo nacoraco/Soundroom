@@ -24,7 +24,7 @@ from ..config import Settings, get_settings
 from ..db import get_db
 from ..deps import AuthContext, get_current_auth, require_csrf, require_roles
 from ..metadata import InvalidMp3Error, read_mp3_metadata
-from ..models import Album, Artist, Track, TrackSource, UserRole
+from ..models import Album, Artist, Listen, Track, TrackSource, UserRole
 from ..recommendations import canonical_metadata, song_identity
 from ..schemas import TrackOut, TrackPage
 from ..storage import EmptyUpload, UploadTooLarge, save_upload_to_temp
@@ -61,7 +61,13 @@ def _empty_page(page: int) -> TrackPage:
     )
 
 
-def _track_out(track: Track, artist: Artist, album: Album | None) -> TrackOut:
+def _track_out(
+    track: Track,
+    artist: Artist,
+    album: Album | None,
+    play_count: int = 0,
+    last_played_at=None,
+) -> TrackOut:
     return TrackOut(
         id=track.id,
         title=track.title,
@@ -73,6 +79,8 @@ def _track_out(track: Track, artist: Artist, album: Album | None) -> TrackOut:
         source_type=track.source_type,
         is_available=track.is_available,
         recording_key=track.recording_key,
+        play_count=play_count,
+        last_played_at=last_played_at,
         created_at=track.created_at,
     )
 
@@ -81,7 +89,8 @@ def _track_out(track: Track, artist: Artist, album: Album | None) -> TrackOut:
 def list_tracks(
     q: str | None = Query(default=None, max_length=MAX_SEARCH_LENGTH),
     page: int = Query(default=1, ge=1),
-    _: AuthContext = Depends(get_current_auth),
+    sort: str = Query(default="recent", pattern="^(recent|most_played)$"),
+    ctx: AuthContext = Depends(get_current_auth),
     db: Session = Depends(get_db),
 ) -> TrackPage:
     raw_query = (q or "").strip()
@@ -113,14 +122,47 @@ def list_tracks(
     if total == 0:
         return _empty_page(page)
 
-    order_by = (
-        (Track.normalized_title.asc(), Artist.normalized_name.asc(), Track.id.asc())
-        if normalized_query
-        else (Track.created_at.desc(), Track.id.asc())
+    play_counts = (
+        select(
+            Listen.track_id.label("track_id"),
+            func.count(Listen.id).label("play_count"),
+            func.max(Listen.started_at).label("last_played_at"),
+        )
+        .where(
+            Listen.user_id == ctx.user.id,
+            Listen.track_id.is_not(None),
+            Listen.completion_ratio >= 0.5,
+        )
+        .group_by(Listen.track_id)
+        .subquery()
     )
-    tracks = db.scalars(
-        select(Track)
+
+    if normalized_query:
+        order_by = (
+            Track.normalized_title.asc(),
+            Artist.normalized_name.asc(),
+            Track.id.asc(),
+        )
+    elif sort == "most_played":
+        order_by = (
+            func.coalesce(play_counts.c.play_count, 0).desc(),
+            func.coalesce(
+                play_counts.c.last_played_at, Track.created_at
+            ).desc(),
+            Track.created_at.desc(),
+            Track.id.asc(),
+        )
+    else:
+        order_by = (Track.created_at.desc(), Track.id.asc())
+
+    rows = db.execute(
+        select(
+            Track,
+            func.coalesce(play_counts.c.play_count, 0),
+            play_counts.c.last_played_at,
+        )
         .join(Artist, Track.artist_id == Artist.id)
+        .outerjoin(play_counts, play_counts.c.track_id == Track.id)
         .options(joinedload(Track.artist), joinedload(Track.album))
         .where(*filters)
         .order_by(*order_by)
@@ -130,8 +172,14 @@ def list_tracks(
 
     return TrackPage(
         items=[
-            _track_out(track, track.artist, track.album)
-            for track in tracks
+            _track_out(
+                track,
+                track.artist,
+                track.album,
+                int(play_count or 0),
+                last_played_at,
+            )
+            for track, play_count, last_played_at in rows
         ],
         page=page,
         page_size=PAGE_SIZE,

@@ -1261,6 +1261,13 @@ tbody tr:hover {
   white-space: nowrap;
 }
 
+.track-main .track-play-count {
+  color: var(--brass);
+  font-size: 0.56rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .track-duration {
   color: var(--ink-soft);
   font-size: 0.65rem;

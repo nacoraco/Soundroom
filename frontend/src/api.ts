@@ -157,9 +157,11 @@ export async function updateUser(
 export async function listTracks({
   q,
   page = 1,
+  sort = "recent",
 }: {
   q?: string;
   page?: number;
+  sort?: "recent" | "most_played";
 } = {}): Promise<TrackPage> {
   const params = new URLSearchParams();
   if (q) {
@@ -167,6 +169,9 @@ export async function listTracks({
   }
   if (page > 1) {
     params.set("page", String(page));
+  }
+  if (sort !== "recent") {
+    params.set("sort", sort);
   }
   const query = params.toString();
   return request<TrackPage>(`/api/tracks${query ? `?${query}` : ""}`);

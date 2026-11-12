@@ -74,8 +74,13 @@ export function LibraryPage() {
   const tooShort = query.length > 0 && query.length < 3;
   const isSearching = query.length >= 3;
   const tracksQuery = useQuery({
-    queryKey: ["tracks", query, page],
-    queryFn: () => listTracks({ q: query || undefined, page }),
+    queryKey: ["tracks", query, page, "most_played"],
+    queryFn: () =>
+      listTracks({
+        q: query || undefined,
+        page,
+        sort: "most_played",
+      }),
     enabled: !tooShort,
     placeholderData: keepPreviousData,
   });
@@ -366,7 +371,7 @@ export function LibraryPage() {
                 Shelf 01 / {total} {total === 1 ? "recording" : "recordings"}
               </span>
               <h2>
-                {isSearching ? `Results for “${query}”` : "Recently added"}
+                {isSearching ? `Results for “${query}”` : "Most played"}
               </h2>
             </div>
             {canEdit && (
@@ -417,6 +422,12 @@ export function LibraryPage() {
                       {track.artist_name}
                       {track.album_title ? ` · ${track.album_title}` : ""}
                     </span>
+                    {track.play_count ? (
+                      <span className="track-play-count mono">
+                        {track.play_count} play
+                        {track.play_count === 1 ? "" : "s"}
+                      </span>
+                    ) : null}
                   </span>
                   <span className="track-duration mono">
                     {formatDuration(track.duration_seconds)}

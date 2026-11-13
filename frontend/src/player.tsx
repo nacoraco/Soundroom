@@ -30,6 +30,7 @@ import {
 import { useAuth } from "./auth";
 import {
   addNativePlaybackListener,
+  getNativeState,
   isNativePlaybackAvailable,
   nextNative,
   pauseNative,
@@ -193,6 +194,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const nativePlayback = isNativePlaybackAvailable();
   const nativeQueueSignatureRef = useRef("");
   const nativeEndedHandledRef = useRef(false);
+  const nativeInitializedRef = useRef(false);
+  const [nativeReady, setNativeReady] = useState(false);
 
   const queueQuery = useQuery({
     queryKey: ["queue"],
@@ -307,12 +310,16 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const queueState = queueQuery.data;
-    if (
-      !queueState ||
-      !queueState.needs_refill ||
-      queueState.radio_exhausted ||
-      refillInFlightRef.current
-    ) {
+    if (!queueState || refillInFlightRef.current) {
+      return;
+    }
+    const hasFailed = queueState.items.some(
+      (item) => item.status === "failed",
+    );
+    if (!queueState.needs_refill && !hasFailed) {
+      return;
+    }
+    if (queueState.radio_exhausted && !hasFailed) {
       return;
     }
     if (Date.now() < refillCooldownRef.current) {
@@ -331,6 +338,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       });
   }, [
     queryClient,
+    queueQuery.data?.items,
     queueQuery.data?.needs_refill,
     queueQuery.data?.radio_exhausted,
     queueQuery.data?.revision,
@@ -377,14 +385,52 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, [signedIn, state.isPlaying]);
 
   useEffect(() => {
-    if (!nativePlayback) {
+    if (
+      !nativePlayback ||
+      nativeInitializedRef.current ||
+      state.queue.length === 0
+    ) {
+      return;
+    }
+    nativeInitializedRef.current = true;
+    void getNativeState()
+      .then((nativeState) => {
+        if (!nativeState?.queueItemId) {
+          return;
+        }
+        const snapshot = stateRef.current;
+        const index = snapshot.queue.findIndex(
+          (track) => track.queue_item_id === nativeState.queueItemId,
+        );
+        if (index === -1) {
+          return;
+        }
+        if (index !== snapshot.currentIndex) {
+          dispatch({ type: "playAt", index });
+        }
+        void updateQueueState({
+          current_item_id: nativeState.queueItemId,
+          is_playing: nativeState.isPlaying,
+          position_seconds: Math.round(nativeState.position),
+        }).catch(() => undefined);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        setNativeReady(true);
+      });
+  }, [nativePlayback, state.queue.length]);
+
+  useEffect(() => {
+    if (!nativePlayback || !nativeReady) {
       return;
     }
     const snapshot = stateRef.current;
     const current = snapshot.queue[snapshot.currentIndex];
     if (!current || current.pending || !current.queue_item_id) {
-      void pauseNative().catch(() => undefined);
-      nativeQueueSignatureRef.current = "";
+      if (nativeQueueSignatureRef.current !== "") {
+        nativeQueueSignatureRef.current = "";
+        void pauseNative().catch(() => undefined);
+      }
       return;
     }
     const readyItems = snapshot.queue.filter(
@@ -429,6 +475,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     });
   }, [
     nativePlayback,
+    nativeReady,
     state.currentIndex,
     state.currentTime,
     state.isPlaying,
@@ -1435,30 +1482,33 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const handleNativeItemChanged = useCallback(
     (change: NativeItemChanged) => {
       const snapshot = stateRef.current;
+      const index = snapshot.queue.findIndex(
+        (track) => track.queue_item_id === change.queueItemId,
+      );
+      if (index === -1) {
+        return;
+      }
       const previous =
         snapshot.queue.find(
           (track) => track.queue_item_id === change.previousQueueItemId,
         ) ?? snapshot.queue[snapshot.currentIndex];
-      if (
-        previous &&
+      const shouldReject =
+        previous !== undefined &&
         previous.origin === "auto" &&
         change.previousDuration > 0 &&
-        change.previousPosition / change.previousDuration < 0.5
-      ) {
-        rejectTrack(previous, "skip");
+        change.previousPosition / change.previousDuration < 0.5;
+      if (index !== snapshot.currentIndex) {
+        dispatch({ type: "playAt", index });
       }
-      if (change.queueItemId) {
-        void updateQueueState({
-          current_item_id: change.queueItemId,
-          is_playing: true,
-          position_seconds: 0,
-        }).catch(() => undefined);
-        const index = snapshot.queue.findIndex(
-          (track) => track.queue_item_id === change.queueItemId,
-        );
-        if (index !== -1 && index !== snapshot.currentIndex) {
-          dispatch({ type: "playAt", index });
-        }
+      const sync = updateQueueState({
+        current_item_id: change.queueItemId,
+        is_playing: true,
+        position_seconds: 0,
+      }).catch(() => undefined);
+      if (shouldReject && previous) {
+        void sync.then(() => {
+          rejectTrack(previous, "skip");
+        });
       }
     },
     [rejectTrack],

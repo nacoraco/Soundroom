@@ -60,8 +60,12 @@ public class PlaybackService extends MediaLibraryService {
     private static final String KEY_POSITION_MS = "position_ms";
     private static final String KEY_PLAY_WHEN_READY = "play_when_ready";
 
-    private static PlaybackService instance;
-    private static PlaybackListener playbackListener;
+    private static final Handler MAIN_HANDLER = new Handler(
+        Looper.getMainLooper()
+    );
+
+    private static volatile PlaybackService instance;
+    private static volatile PlaybackListener playbackListener;
     private static String pendingQueueJson;
     private static int pendingStartIndex;
     private static long pendingPositionMs;
@@ -74,6 +78,7 @@ public class PlaybackService extends MediaLibraryService {
     private Handler handler;
     private Runnable ticker;
 
+    private volatile JSONObject lastState = new JSONObject();
     private String lastMediaId = "";
     private String lastQueueItemId = "";
     private long lastKnownPositionMs;
@@ -84,11 +89,17 @@ public class PlaybackService extends MediaLibraryService {
         return instance;
     }
 
+    private static void runOnMain(Runnable action) {
+        MAIN_HANDLER.post(action);
+    }
+
     public static void setPlaybackListener(@Nullable PlaybackListener listener) {
         playbackListener = listener;
-        if (instance != null) {
-            instance.notifyState();
-        }
+        runOnMain(() -> {
+            if (instance != null) {
+                instance.notifyState();
+            }
+        });
     }
 
     public static void setQueue(
@@ -105,7 +116,16 @@ public class PlaybackService extends MediaLibraryService {
             hasPendingQueue = true;
             return;
         }
-        instance.applyQueue(items, startIndex, positionMs, playWhenReady);
+        runOnMain(() -> {
+            if (instance != null) {
+                instance.applyQueue(
+                    items,
+                    startIndex,
+                    positionMs,
+                    playWhenReady
+                );
+            }
+        });
     }
 
     public static void updateQueue(
@@ -122,67 +142,95 @@ public class PlaybackService extends MediaLibraryService {
             hasPendingQueue = true;
             return;
         }
-        instance.applyQueueUpdate(
-            items,
-            currentMediaId,
-            positionMs,
-            playWhenReady
-        );
+        runOnMain(() -> {
+            if (instance != null) {
+                instance.applyQueueUpdate(
+                    items,
+                    currentMediaId,
+                    positionMs,
+                    playWhenReady
+                );
+            }
+        });
     }
 
     public static void play() {
-        if (instance != null && instance.player != null) {
-            instance.player.play();
-        }
+        runOnMain(() -> {
+            if (instance != null && instance.player != null) {
+                instance.player.play();
+            }
+        });
     }
 
     public static void pause() {
-        if (instance != null && instance.player != null) {
-            instance.player.pause();
-        }
+        runOnMain(() -> {
+            if (instance != null && instance.player != null) {
+                instance.player.pause();
+            }
+        });
     }
 
     public static void seekTo(long positionMs) {
-        if (instance != null && instance.player != null) {
-            instance.player.seekTo(Math.max(0, positionMs));
-        }
+        runOnMain(() -> {
+            if (instance != null && instance.player != null) {
+                instance.player.seekTo(Math.max(0, positionMs));
+            }
+        });
     }
 
     public static void next() {
-        if (instance != null && instance.player != null) {
-            instance.player.seekToNextMediaItem();
-        }
+        runOnMain(() -> {
+            if (instance != null && instance.player != null) {
+                instance.player.seekToNextMediaItem();
+            }
+        });
     }
 
     public static void previous() {
-        if (instance != null && instance.player != null) {
-            instance.player.seekToPreviousMediaItem();
-        }
+        runOnMain(() -> {
+            if (instance != null && instance.player != null) {
+                instance.player.seekToPreviousMediaItem();
+            }
+        });
     }
 
     public static void stop() {
-        if (instance != null && instance.player != null) {
-            instance.player.pause();
-            instance.player.clearMediaItems();
-        }
+        runOnMain(() -> {
+            if (instance != null && instance.player != null) {
+                instance.player.pause();
+                instance.player.clearMediaItems();
+            }
+        });
     }
 
     public static JSONObject getState() {
-        if (instance == null || instance.player == null) {
-            JSONObject empty = new JSONObject();
-            try {
-                empty.put("isPlaying", false);
-                empty.put("position", 0);
-                empty.put("duration", 0);
-                empty.put("currentIndex", -1);
-                empty.put("mediaId", "");
-                empty.put("queueItemId", "");
-                empty.put("ended", false);
-            } catch (JSONException ignored) {
-            }
-            return empty;
+        if (instance == null) {
+            return emptyState();
         }
-        return instance.buildState();
+        JSONObject cached = instance.lastState;
+        if (cached == null || cached.length() == 0) {
+            return emptyState();
+        }
+        try {
+            return new JSONObject(cached.toString());
+        } catch (JSONException ignored) {
+            return emptyState();
+        }
+    }
+
+    private static JSONObject emptyState() {
+        JSONObject empty = new JSONObject();
+        try {
+            empty.put("isPlaying", false);
+            empty.put("position", 0);
+            empty.put("duration", 0);
+            empty.put("currentIndex", -1);
+            empty.put("mediaId", "");
+            empty.put("queueItemId", "");
+            empty.put("ended", false);
+        } catch (JSONException ignored) {
+        }
+        return empty;
     }
 
     @Override
@@ -505,6 +553,7 @@ public class PlaybackService extends MediaLibraryService {
             return;
         }
         JSONObject state = buildState();
+        lastState = state;
         long position = player.getCurrentPosition();
         long duration = player.getDuration();
         if (duration == C.TIME_UNSET || duration < 0) {

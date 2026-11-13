@@ -29,10 +29,19 @@ import {
 } from "./api";
 import { useAuth } from "./auth";
 import {
-  addNativeMediaSessionListener,
-  clearNativeMediaSession,
-  updateNativeMediaSession,
-} from "./nativeMediaSession";
+  addNativePlaybackListener,
+  isNativePlaybackAvailable,
+  nextNative,
+  pauseNative,
+  playNative,
+  previousNative,
+  seekNative,
+  updateNativeQueue,
+  type NativeItemChanged,
+  type NativePlaybackEvent,
+  type NativePlaybackState,
+  type NativeQueueItem,
+} from "./nativePlayback";
 import {
   initialPlayerState,
   playerReducer,
@@ -158,7 +167,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const userPausedRef = useRef(false);
   const interruptedRef = useRef(false);
   const lastPlayTokenRef = useRef(state.playToken);
-  const lastNativePositionUpdateRef = useRef(0);
   const [radioExhausted, setRadioExhausted] = useState(false);
   const [canUndoSkip, setCanUndoSkip] = useState(false);
   const lastSkippedRef = useRef<PlayerTrack | null>(null);
@@ -182,6 +190,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const { data: authData } = useAuth();
   const signedIn = Boolean(authData?.user);
   const wasSignedInRef = useRef(false);
+  const nativePlayback = isNativePlaybackAvailable();
+  const nativeQueueSignatureRef = useRef("");
+  const nativeEndedHandledRef = useRef(false);
 
   const queueQuery = useQuery({
     queryKey: ["queue"],
@@ -364,6 +375,65 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       // Playback state sync is best-effort.
     });
   }, [signedIn, state.isPlaying]);
+
+  useEffect(() => {
+    if (!nativePlayback) {
+      return;
+    }
+    const snapshot = stateRef.current;
+    const current = snapshot.queue[snapshot.currentIndex];
+    if (!current || current.pending || !current.queue_item_id) {
+      void pauseNative().catch(() => undefined);
+      nativeQueueSignatureRef.current = "";
+      return;
+    }
+    const readyItems = snapshot.queue.filter(
+      (track) =>
+        !track.pending &&
+        track.is_available &&
+        Boolean(track.queue_item_id),
+    );
+    const signature = `${readyItems
+      .map((track) => track.queue_item_id)
+      .join("|")}#${current.queue_item_id}`;
+    if (signature === nativeQueueSignatureRef.current) {
+      return;
+    }
+    nativeQueueSignatureRef.current = signature;
+    const items: NativeQueueItem[] = readyItems.map((track) => ({
+      mediaId: track.queue_item_id as string,
+      queueItemId: track.queue_item_id as string,
+      trackId: track.id,
+      streamUrl: new URL(
+        `/api/tracks/${track.id}/stream`,
+        window.location.origin,
+      ).href,
+      title: track.title,
+      artist: track.artist_name,
+      album: track.album_title ?? "",
+      durationMs: Math.round(track.duration_seconds * 1000),
+    }));
+    const currentIndex = items.findIndex(
+      (item) => item.mediaId === current.queue_item_id,
+    );
+    if (currentIndex === -1) {
+      return;
+    }
+    void updateNativeQueue(
+      items,
+      current.queue_item_id as string,
+      snapshot.currentTime,
+      snapshot.isPlaying,
+    ).catch(() => {
+      nativeQueueSignatureRef.current = "";
+    });
+  }, [
+    nativePlayback,
+    state.currentIndex,
+    state.currentTime,
+    state.isPlaying,
+    state.queue,
+  ]);
 
   const resetRecommendationSession = useCallback(
     (track: PlayerTrack | null) => {
@@ -759,15 +829,28 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const toggle = useCallback(() => {
     const snapshot = stateRef.current;
+    if (nativePlayback) {
+      const playing = !snapshot.isPlaying;
+      userPausedRef.current = !playing;
+      interruptedRef.current = false;
+      dispatch({ type: "setPlaying", playing });
+      void (playing ? playNative() : pauseNative()).catch(() => undefined);
+      return;
+    }
     userPausedRef.current = snapshot.isPlaying;
     interruptedRef.current = false;
     dispatch({ type: "toggle" });
-  }, []);
+  }, [nativePlayback]);
 
   const next = useCallback(() => {
     const snapshot = stateRef.current;
     const current = snapshot.queue[snapshot.currentIndex];
     if (!current) {
+      return;
+    }
+    if (nativePlayback) {
+      captureCurrentProgress();
+      void nextNative().catch(() => undefined);
       return;
     }
     captureCurrentProgress();
@@ -784,17 +867,39 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         // The queue poll will reconcile.
       },
     );
-  }, [captureCurrentProgress, rejectTrack, runQueueMutation]);
+  }, [
+    captureCurrentProgress,
+    nativePlayback,
+    rejectTrack,
+    runQueueMutation,
+  ]);
 
-  const seek = useCallback((time: number) => {
-    const audio = audioRef.current;
-    if (audio && Number.isFinite(time)) {
-      audio.currentTime = Math.max(0, time);
-    }
-    dispatch({ type: "seek", time });
-  }, []);
+  const seek = useCallback(
+    (time: number) => {
+      if (nativePlayback) {
+        dispatch({ type: "seek", time });
+        void seekNative(Math.max(0, time)).catch(() => undefined);
+        return;
+      }
+      const audio = audioRef.current;
+      if (audio && Number.isFinite(time)) {
+        audio.currentTime = Math.max(0, time);
+      }
+      dispatch({ type: "seek", time });
+    },
+    [nativePlayback],
+  );
 
   const previous = useCallback(() => {
+    if (nativePlayback) {
+      if (state.currentTime > 3) {
+        seek(0);
+      } else {
+        captureCurrentProgress();
+        void previousNative().catch(() => undefined);
+      }
+      return;
+    }
     if (state.currentTime > 3) {
       seek(0);
       return;
@@ -807,7 +912,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     ).catch(() => {
       // The queue poll will reconcile.
     });
-  }, [captureCurrentProgress, runQueueMutation, seek, state.currentTime]);
+  }, [
+    captureCurrentProgress,
+    nativePlayback,
+    runQueueMutation,
+    seek,
+    state.currentTime,
+  ]);
 
   const playAt = useCallback(
     (index: number) => {
@@ -977,6 +1088,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const startSource = useCallback(
     (track: PlayerTrack) => {
+      if (nativePlayback) {
+        return;
+      }
       const audio = audioRef.current;
       if (!audio || track.pending) {
         return;
@@ -996,10 +1110,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       }
       requestPlay(audio);
     },
-    [requestPlay],
+    [nativePlayback, requestPlay],
   );
 
   useEffect(() => {
+    if (nativePlayback) {
+      return;
+    }
     const audio = audioRef.current;
     if (!audio) {
       return;
@@ -1035,9 +1152,18 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     if (state.isPlaying) {
       requestPlay(audio);
     }
-  }, [currentSource, currentTrackId, state.playToken, requestPlay]);
+  }, [
+    currentSource,
+    currentTrackId,
+    nativePlayback,
+    requestPlay,
+    state.playToken,
+  ]);
 
   useEffect(() => {
+    if (nativePlayback) {
+      return;
+    }
     const audio = audioRef.current;
     if (!audio || !currentTrack || currentTrack.pending) {
       return;
@@ -1047,9 +1173,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     } else {
       audio.pause();
     }
-  }, [currentTrack, state.isPlaying, requestPlay]);
+  }, [currentTrack, nativePlayback, state.isPlaying, requestPlay]);
 
   useEffect(() => {
+    if (nativePlayback) {
+      return;
+    }
     const syncPlaybackWithAudio = () => {
       if (document.visibilityState === "hidden") {
         return;
@@ -1080,9 +1209,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       window.removeEventListener("focus", syncPlaybackWithAudio);
       window.removeEventListener("pageshow", syncPlaybackWithAudio);
     };
-  }, [requestPlay]);
+  }, [nativePlayback, requestPlay]);
 
   useEffect(() => {
+    if (nativePlayback) {
+      return;
+    }
     const interval = window.setInterval(() => {
       const audio = audioRef.current;
       const snapshot = stateRef.current;
@@ -1103,7 +1235,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       }
     }, 5000);
     return () => window.clearInterval(interval);
-  }, [requestPlay]);
+  }, [nativePlayback, requestPlay]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -1137,6 +1269,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (
+      nativePlayback ||
       !("mediaSession" in navigator) ||
       !currentTrack ||
       currentTrack.pending
@@ -1229,18 +1362,22 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         }
       }
     };
-  }, [currentTrack, next, previous, requestPlay, seek]);
+  }, [currentTrack, nativePlayback, next, previous, requestPlay, seek]);
 
   useEffect(() => {
+    if (nativePlayback) {
+      return;
+    }
     if ("mediaSession" in navigator) {
       navigator.mediaSession.playbackState = state.isPlaying
         ? "playing"
         : "paused";
     }
-  }, [state.isPlaying]);
+  }, [nativePlayback, state.isPlaying]);
 
   useEffect(() => {
     if (
+      nativePlayback ||
       !("mediaSession" in navigator) ||
       !currentTrack ||
       currentTrack.pending ||
@@ -1262,97 +1399,100 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     } catch {
       // Some browsers reject position updates before metadata is ready.
     }
-  }, [currentTrack, state.currentTime, state.duration]);
+  }, [
+    currentTrack,
+    nativePlayback,
+    state.currentTime,
+    state.duration,
+  ]);
 
-  useEffect(() => {
-    let cancelled = false;
-    let handle: { remove: () => Promise<void> } | null = null;
-
-    void addNativeMediaSessionListener(({ action }) => {
-      if (action === "play") {
-        const audio = audioRef.current;
-        userPausedRef.current = false;
-        interruptedRef.current = false;
-        if (audio && audio.src) {
-          requestPlay(audio);
+  const handleNativeState = useCallback(
+    (nativeState: NativePlaybackState) => {
+      dispatch({ type: "duration", duration: nativeState.duration });
+      dispatch({
+        type: "time",
+        time: nativeState.position,
+        duration: nativeState.duration,
+      });
+      if (nativeState.isPlaying !== stateRef.current.isPlaying) {
+        dispatch({ type: "setPlaying", playing: nativeState.isPlaying });
+      }
+      if (nativeState.ended) {
+        if (!nativeEndedHandledRef.current) {
+          nativeEndedHandledRef.current = true;
+          void runQueueMutation(
+            () => advanceServerQueue("next"),
+            true,
+          ).catch(() => undefined);
         }
-        dispatch({ type: "setPlaying", playing: true });
-      } else if (action === "pause") {
-        userPausedRef.current = true;
-        interruptedRef.current = false;
-        audioRef.current?.pause();
-        dispatch({ type: "setPlaying", playing: false });
-      } else if (action === "next") {
-        next();
-      } else if (action === "previous") {
-        previous();
-      } else if (action.startsWith("seek:")) {
-        const milliseconds = Number(action.slice("seek:".length));
-        if (Number.isFinite(milliseconds)) {
-          seek(milliseconds / 1000);
+      } else {
+        nativeEndedHandledRef.current = false;
+      }
+    },
+    [runQueueMutation],
+  );
+
+  const handleNativeItemChanged = useCallback(
+    (change: NativeItemChanged) => {
+      const snapshot = stateRef.current;
+      const previous =
+        snapshot.queue.find(
+          (track) => track.queue_item_id === change.previousQueueItemId,
+        ) ?? snapshot.queue[snapshot.currentIndex];
+      if (
+        previous &&
+        previous.origin === "auto" &&
+        change.previousDuration > 0 &&
+        change.previousPosition / change.previousDuration < 0.5
+      ) {
+        rejectTrack(previous, "skip");
+      }
+      if (change.queueItemId) {
+        void updateQueueState({
+          current_item_id: change.queueItemId,
+          is_playing: true,
+          position_seconds: 0,
+        }).catch(() => undefined);
+        const index = snapshot.queue.findIndex(
+          (track) => track.queue_item_id === change.queueItemId,
+        );
+        if (index !== -1 && index !== snapshot.currentIndex) {
+          dispatch({ type: "playAt", index });
         }
       }
+    },
+    [rejectTrack],
+  );
+
+  useEffect(() => {
+    if (!nativePlayback) {
+      return;
+    }
+    let disposed = false;
+    let handle: { remove: () => Promise<void> } | null = null;
+    void addNativePlaybackListener((event: NativePlaybackEvent) => {
+      if (disposed) {
+        return;
+      }
+      if (event.type === "state") {
+        handleNativeState(event.state);
+      } else if (event.type === "itemChanged") {
+        handleNativeItemChanged(event.change);
+      } else if (event.type === "error") {
+        dispatch({ type: "error", error: event.message });
+      }
     }).then((result) => {
-      if (cancelled) {
+      if (disposed) {
         void result?.remove();
         return;
       }
       handle = result;
     });
-
     return () => {
-      cancelled = true;
+      disposed = true;
       void handle?.remove();
     };
-  }, [next, previous, requestPlay, seek]);
-
-  useEffect(() => {
-    if (!currentTrack || currentTrack.pending) {
-      clearNativeMediaSession();
-      return;
-    }
-    const duration =
-      state.duration > 0 ? state.duration : currentTrack.duration_seconds;
-    updateNativeMediaSession({
-      title: currentTrack.title,
-      artist: currentTrack.artist_name,
-      album: currentTrack.album_title ?? "Soundroom",
-      duration: Number.isFinite(duration) ? duration : 0,
-      isPlaying: state.isPlaying,
-      position: Math.max(state.currentTime, 0),
-    });
-  }, [currentTrack, state.duration, state.isPlaying]);
-
-  useEffect(() => {
-    if (
-      !currentTrack ||
-      currentTrack.pending ||
-      !state.isPlaying ||
-      state.currentTime <= 0
-    ) {
-      return;
-    }
-    const now = Date.now();
-    if (now - lastNativePositionUpdateRef.current < 5000) {
-      return;
-    }
-    lastNativePositionUpdateRef.current = now;
-    const duration =
-      state.duration > 0 ? state.duration : currentTrack.duration_seconds;
-    updateNativeMediaSession({
-      title: currentTrack.title,
-      artist: currentTrack.artist_name,
-      album: currentTrack.album_title ?? "Soundroom",
-      duration: Number.isFinite(duration) ? duration : 0,
-      isPlaying: state.isPlaying,
-      position: Math.max(state.currentTime, 0),
-    });
-  }, [
-    currentTrack,
-    state.currentTime,
-    state.duration,
-    state.isPlaying,
-  ]);
+  }, [handleNativeItemChanged, handleNativeState, nativePlayback]);
 
   useEffect(() => {
     if (!currentTrack) {

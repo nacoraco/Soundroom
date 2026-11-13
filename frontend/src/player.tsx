@@ -201,7 +201,15 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     queryKey: ["queue"],
     queryFn: getQueue,
     enabled: signedIn,
-    refetchInterval: signedIn ? 2000 : false,
+    refetchInterval: signedIn
+      ? (query) => {
+          const state = query.state.data as QueueState | undefined;
+          const hasPendingImport = state?.items.some(
+            (item) => item.status === "pending",
+          );
+          return hasPendingImport ? 500 : 2000;
+        }
+      : false,
   });
 
   useEffect(() => {

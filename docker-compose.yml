@@ -57,21 +57,6 @@ services:
       db:
         condition: service_healthy
 
-  audio-reprocess:
-    profiles: ["audio-migrate"]
-    build: ./backend
-    restart: "no"
-    environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-soundroom}:${POSTGRES_PASSWORD:-soundroom}@db:5432/${POSTGRES_DB:-soundroom}
-      MEDIA_STORAGE_PATH: /data/audio
-    command: python -m app.reprocess_audio --all
-    volumes:
-      - ./backend:/app
-      - ./data/audio:/data/audio
-    depends_on:
-      db:
-        condition: service_healthy
-
   worker:
     build: ./backend
     restart: unless-stopped

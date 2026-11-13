@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -17,7 +18,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .audio_processing import AudioProcessingError, process_audio
+from .audio_processing import process_audio
 from .config import Settings, get_settings
 from .db import SessionLocal
 from .llm_review import review_candidates_with_llm
@@ -471,22 +472,12 @@ def _publish_download(
         db.commit()
 
         mp3_path = workdir / "track.mp3"
-        if config.audio_processing_enabled:
-            try:
-                processed = process_audio(source, mp3_path, config)
-            except AudioProcessingError as exc:
-                raise ValueError(
-                    f"Could not process downloaded audio: {exc}"
-                ) from exc
-            duration = processed.duration_seconds
-            logger.info(
-                "Processed import audio duration=%ss input_lufs=%s",
-                duration,
-                processed.input_lufs,
-            )
-        else:
-            convert_to_mp3(source, mp3_path)
-            duration = probe_duration(mp3_path)
+        convert_to_mp3(source, mp3_path)
+        duration = probe_duration(mp3_path)
+        logger.info(
+            "Published import audio before post-processing duration=%ss",
+            duration,
+        )
         if duration > max_seconds:
             raise ValueError(
                 "The downloaded track exceeds the configured maximum duration."
@@ -590,6 +581,39 @@ def _publish_download(
             final_path.unlink(missing_ok=True)
             original_path.unlink(missing_ok=True)
             raise
+
+        if config.audio_processing_enabled:
+            job_id = job.id
+            track_id = job.track_id
+            processed_path = workdir / "processed.mp3"
+            try:
+                processed = process_audio(source, processed_path, config)
+                os.replace(processed_path, final_path)
+                if track_id is not None:
+                    track = db.get(Track, track_id)
+                    if track is not None:
+                        track.duration_seconds = processed.duration_seconds
+                        db.add(track)
+                        db.commit()
+                        queue_service.mark_job_ready(
+                            db,
+                            job_id,
+                            track.id,
+                        )
+                logger.info(
+                    "Post-processed import track=%s duration=%ss input_lufs=%s",
+                    track_id,
+                    processed.duration_seconds,
+                    processed.input_lufs,
+                )
+            except Exception:
+                db.rollback()
+                logger.exception(
+                    "Post-processing failed for track %s; keeping fast version",
+                    track_id,
+                )
+            finally:
+                processed_path.unlink(missing_ok=True)
 
 
 def process_job(
@@ -756,7 +780,7 @@ def run_worker() -> None:
             with SessionLocal() as db:
                 job = process_next_job(db)
                 if job is None:
-                    time.sleep(2)
+                    time.sleep(0.25)
         except Exception:
             logger.exception("Import worker loop failed")
             time.sleep(2)

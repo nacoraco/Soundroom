@@ -19,7 +19,13 @@ from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
+from starlette.concurrency import run_in_threadpool
 
+from ..audio_processing import (
+    AudioProcessingError,
+    find_original_file,
+    process_audio,
+)
 from ..config import Settings, get_settings
 from ..db import get_db
 from ..deps import AuthContext, get_current_auth, require_csrf, require_roles
@@ -313,6 +319,10 @@ def delete_track(
             )
         file_path.unlink()
 
+    original_path = find_original_file(media_root, track.file_path)
+    if original_path is not None:
+        original_path.unlink(missing_ok=True)
+
     db.delete(track)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -452,48 +462,91 @@ async def upload_track(
             elif final_year is not None and album_obj.release_year is None:
                 album_obj.release_year = final_year
 
-        relative_path = f"tracks/{uuid4().hex}.mp3"
-        final_path = Path(settings.media_storage_path) / relative_path
-        final_path.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(temp_path, final_path)
-
-        canonical_artist, canonical_title = canonical_metadata(
-            final_artist or "", final_title or ""
-        )
-        track = Track(
-            artist_id=artist_obj.id,
-            album_id=album_obj.id if album_obj is not None else None,
-            title=final_title,
-            normalized_title=normalized_title,
-            canonical_artist=canonical_artist,
-            canonical_title=canonical_title,
-            recording_key=song_identity(
-                final_artist or "", final_title or ""
-            ),
-            duration_seconds=metadata.duration_seconds,
-            file_path=relative_path,
-            mime_type="audio/mpeg",
-            source_type=TrackSource.upload,
-            audio_sha256=sha256,
-            is_available=True,
-        )
+        storage_id = uuid4().hex
+        relative_path = f"tracks/{storage_id}.mp3"
+        media_root = Path(settings.media_storage_path)
+        final_path = media_root / relative_path
+        processed_path: Path | None = None
+        original_path: Path | None = None
+        completed = False
 
         try:
-            db.add(track)
-            db.commit()
-        except IntegrityError as exc:
-            db.rollback()
-            final_path.unlink(missing_ok=True)
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="This recording is already in the library.",
-            ) from exc
-        except Exception:
-            db.rollback()
-            final_path.unlink(missing_ok=True)
-            raise
+            duration_seconds = metadata.duration_seconds
+            if settings.audio_processing_enabled:
+                processed_path = (
+                    media_root / ".tmp" / f"{storage_id}.mp3"
+                )
+                processed = await run_in_threadpool(
+                    process_audio,
+                    temp_path,
+                    processed_path,
+                    settings,
+                )
+                duration_seconds = processed.duration_seconds
+                final_path.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(processed_path, final_path)
+                original_path = (
+                    media_root
+                    / "originals"
+                    / f"{storage_id}{Path(file.filename or '').suffix.lower()}"
+                )
+                original_path.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(temp_path, original_path)
+            else:
+                final_path.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(temp_path, final_path)
 
-        db.refresh(track)
-        return _track_out(track, artist_obj, album_obj)
+            canonical_artist, canonical_title = canonical_metadata(
+                final_artist or "", final_title or ""
+            )
+            track = Track(
+                artist_id=artist_obj.id,
+                album_id=album_obj.id if album_obj is not None else None,
+                title=final_title,
+                normalized_title=normalized_title,
+                canonical_artist=canonical_artist,
+                canonical_title=canonical_title,
+                recording_key=song_identity(
+                    final_artist or "", final_title or ""
+                ),
+                duration_seconds=duration_seconds,
+                file_path=relative_path,
+                mime_type="audio/mpeg",
+                source_type=TrackSource.upload,
+                audio_sha256=sha256,
+                is_available=True,
+            )
+
+            try:
+                db.add(track)
+                db.commit()
+            except IntegrityError as exc:
+                db.rollback()
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="This recording is already in the library.",
+                ) from exc
+            except Exception:
+                db.rollback()
+                raise
+
+            completed = True
+            db.refresh(track)
+            return _track_out(track, artist_obj, album_obj)
+        except AudioProcessingError as exc:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Audio processing failed.",
+            ) from exc
+        finally:
+            temp_path.unlink(missing_ok=True)
+            if processed_path is not None:
+                processed_path.unlink(missing_ok=True)
+                processed_path = None
+            if not completed:
+                final_path.unlink(missing_ok=True)
+                if original_path is not None:
+                    original_path.unlink(missing_ok=True)
     finally:
         temp_path.unlink(missing_ok=True)

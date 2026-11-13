@@ -19,6 +19,7 @@ import androidx.media3.datasource.DataSource;
 import androidx.media3.datasource.okhttp.OkHttpDataSource;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
+import androidx.media3.session.DefaultMediaNotificationProvider;
 import androidx.media3.session.LibraryResult;
 import androidx.media3.session.MediaLibraryService;
 import androidx.media3.session.MediaSession;
@@ -71,6 +72,7 @@ public class PlaybackService extends MediaLibraryService {
     private static long pendingPositionMs;
     private static boolean pendingPlayWhenReady;
     private static boolean hasPendingQueue;
+    private static boolean pendingPlay;
 
     private ExoPlayer player;
     private MediaLibrarySession session;
@@ -91,6 +93,23 @@ public class PlaybackService extends MediaLibraryService {
 
     private static void runOnMain(Runnable action) {
         MAIN_HANDLER.post(action);
+    }
+
+    private void playPrepared() {
+        if (player.getPlaybackState() == Player.STATE_IDLE) {
+            player.prepare();
+        }
+        player.play();
+    }
+
+    private void applyPlaybackIntent(boolean playWhenReady) {
+        player.setPlayWhenReady(playWhenReady);
+        if (
+            playWhenReady &&
+            player.getPlaybackState() == Player.STATE_IDLE
+        ) {
+            player.prepare();
+        }
     }
 
     public static void setPlaybackListener(@Nullable PlaybackListener listener) {
@@ -157,13 +176,16 @@ public class PlaybackService extends MediaLibraryService {
     public static void play() {
         runOnMain(() -> {
             if (instance != null && instance.player != null) {
-                instance.player.play();
+                instance.playPrepared();
+            } else {
+                pendingPlay = true;
             }
         });
     }
 
     public static void pause() {
         runOnMain(() -> {
+            pendingPlay = false;
             if (instance != null && instance.player != null) {
                 instance.player.pause();
             }
@@ -196,6 +218,7 @@ public class PlaybackService extends MediaLibraryService {
 
     public static void stop() {
         runOnMain(() -> {
+            pendingPlay = false;
             if (instance != null && instance.player != null) {
                 instance.player.pause();
                 instance.player.clearMediaItems();
@@ -238,6 +261,12 @@ public class PlaybackService extends MediaLibraryService {
         super.onCreate();
         instance = this;
         preferences = getSharedPreferences(PREFS, MODE_PRIVATE);
+        setMediaNotificationProvider(
+            new DefaultMediaNotificationProvider.Builder(this)
+                .setChannelId("soundroom_playback")
+                .setChannelName(R.string.notification_channel_name)
+                .build()
+        );
         player = buildPlayer();
         session = new MediaLibrarySession.Builder(
             this,
@@ -246,6 +275,7 @@ public class PlaybackService extends MediaLibraryService {
         )
             .setSessionActivity(buildSessionActivity())
             .build();
+        addSession(session);
         player.addListener(new PlayerEvents());
         restoreQueue();
         if (hasPendingQueue && pendingQueueJson != null) {
@@ -257,6 +287,12 @@ public class PlaybackService extends MediaLibraryService {
             );
             hasPendingQueue = false;
             pendingQueueJson = null;
+        }
+        if (pendingPlay) {
+            pendingPlay = false;
+            if (player.getMediaItemCount() > 0) {
+                playPrepared();
+            }
         }
         handler = new Handler(Looper.getMainLooper());
         ticker = new Runnable() {
@@ -354,7 +390,7 @@ public class PlaybackService extends MediaLibraryService {
         }
         int index = Math.max(0, Math.min(startIndex, mediaItems.size() - 1));
         player.setMediaItems(mediaItems, index, Math.max(0, positionMs));
-        player.setPlayWhenReady(playWhenReady);
+        applyPlaybackIntent(playWhenReady);
         String currentMediaId = mediaItems.get(index).mediaId;
         saveQueue(items, currentMediaId, positionMs, playWhenReady);
         notifyLibraryChanged(mediaItems.size());
@@ -413,16 +449,18 @@ public class PlaybackService extends MediaLibraryService {
                 player.addMediaItems(
                     newItems.subList(existingCount, newItems.size())
                 );
+                applyPlaybackIntent(playWhenReady);
             } else if (prefix && newItems.size() < existingCount) {
                 player.removeMediaItems(newItems.size(), existingCount);
+                applyPlaybackIntent(playWhenReady);
             } else {
                 long currentPosition = player.getCurrentPosition();
                 player.setMediaItems(newItems, newIndex, currentPosition);
-                player.setPlayWhenReady(player.getPlayWhenReady());
+                applyPlaybackIntent(playWhenReady);
             }
         } else {
             player.setMediaItems(newItems, newIndex, Math.max(0, positionMs));
-            player.setPlayWhenReady(playWhenReady);
+            applyPlaybackIntent(playWhenReady);
         }
         String activeMediaId = player.getCurrentMediaItem() != null
             ? player.getCurrentMediaItem().mediaId

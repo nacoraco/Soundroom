@@ -11,6 +11,7 @@ os.environ["INITIAL_LISTENER_EMAIL"] = "listener@example.com"
 os.environ["INITIAL_LISTENER_PASSWORD"] = "listener-password"
 os.environ["INITIAL_LISTENER_DISPLAY_NAME"] = "Listener"
 os.environ["SESSION_TTL_HOURS"] = "24"
+os.environ["AUDIO_PROCESSING_ENABLED"] = "false"
 
 import pytest
 from fastapi.testclient import TestClient

@@ -27,6 +27,15 @@ class Settings(BaseSettings):
     lastfm_timeout_seconds: float = 10.0
     max_upload_mb: int = 50
     media_storage_path: str = "./data/audio"
+    audio_processing_enabled: bool = True
+    audio_trim_silence: bool = True
+    audio_normalize_loudness: bool = True
+    audio_silence_threshold_db: float = -45.0
+    audio_silence_padding_seconds: float = 0.15
+    audio_target_lufs: float = -14.0
+    audio_target_true_peak_db: float = -1.5
+    audio_target_lra: float = 11.0
+    audio_mp3_quality: int = 2
 
     model_config = SettingsConfigDict(
         env_file=".env",

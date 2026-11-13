@@ -17,6 +17,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .audio_processing import AudioProcessingError, process_audio
 from .config import Settings, get_settings
 from .db import SessionLocal
 from .llm_review import review_candidates_with_llm
@@ -469,8 +470,23 @@ def _publish_download(
         db.add(job)
         db.commit()
 
-        mp3_path = convert_to_mp3(source, workdir / "track.mp3")
-        duration = probe_duration(mp3_path)
+        mp3_path = workdir / "track.mp3"
+        if config.audio_processing_enabled:
+            try:
+                processed = process_audio(source, mp3_path, config)
+            except AudioProcessingError as exc:
+                raise ValueError(
+                    f"Could not process downloaded audio: {exc}"
+                ) from exc
+            duration = processed.duration_seconds
+            logger.info(
+                "Processed import audio duration=%ss input_lufs=%s",
+                duration,
+                processed.input_lufs,
+            )
+        else:
+            convert_to_mp3(source, mp3_path)
+            duration = probe_duration(mp3_path)
         if duration > max_seconds:
             raise ValueError(
                 "The downloaded track exceeds the configured maximum duration."
@@ -490,13 +506,18 @@ def _publish_download(
         if _job_is_cancelled(db, job):
             return
 
-        relative_path = f"tracks/{uuid4().hex}.mp3"
+        storage_id = uuid4().hex
+        relative_path = f"tracks/{storage_id}.mp3"
         final_path = media_root / relative_path
-        final_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(mp3_path), final_path)
+        original_suffix = source.suffix.lower()
+        if not re.fullmatch(r"\.[a-z0-9]{1,8}", original_suffix):
+            original_suffix = ".audio"
+        original_path = (
+            media_root / "originals" / f"{storage_id}{original_suffix}"
+        )
 
         try:
-            audio_sha256 = _sha256(final_path)
+            audio_sha256 = _sha256(mp3_path)
             existing = db.scalar(
                 select(Track).where(Track.audio_sha256 == audio_sha256)
             )
@@ -508,8 +529,13 @@ def _publish_download(
                 db.add(job)
                 db.commit()
                 queue_service.mark_job_ready(db, job.id, existing.id)
-                final_path.unlink(missing_ok=True)
                 return
+
+            final_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(mp3_path), final_path)
+            if config.audio_processing_enabled:
+                original_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, original_path)
 
             source_artist = job.source_artist or candidate.artist or ""
             source_title = job.source_title or candidate.title
@@ -562,6 +588,7 @@ def _publish_download(
         except Exception:
             db.rollback()
             final_path.unlink(missing_ok=True)
+            original_path.unlink(missing_ok=True)
             raise
 
 

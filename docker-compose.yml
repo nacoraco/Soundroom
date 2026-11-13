@@ -64,7 +64,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-soundroom}:${POSTGRES_PASSWORD:-soundroom}@db:5432/${POSTGRES_DB:-soundroom}
       MEDIA_STORAGE_PATH: /data/audio
-    command: python -m app.reprocess_audio
+    command: python -m app.reprocess_audio --all
     volumes:
       - ./backend:/app
       - ./data/audio:/data/audio

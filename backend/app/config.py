@@ -31,11 +31,14 @@ class Settings(BaseSettings):
     audio_trim_silence: bool = True
     audio_normalize_loudness: bool = True
     audio_silence_threshold_db: float = -45.0
+    audio_silence_min_duration_seconds: float = 0.35
     audio_silence_padding_seconds: float = 0.15
     audio_target_lufs: float = -14.0
     audio_target_true_peak_db: float = -1.5
     audio_target_lra: float = 11.0
     audio_mp3_quality: int = 2
+    audio_max_trim_seconds: float = 30.0
+    audio_min_remaining_ratio: float = 0.4
 
     model_config = SettingsConfigDict(
         env_file=".env",

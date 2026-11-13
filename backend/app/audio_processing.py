@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 import subprocess
@@ -8,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 class AudioProcessingError(RuntimeError):
@@ -48,16 +51,81 @@ def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
         raise AudioProcessingError(f"Audio processing failed: {detail}") from exc
 
 
-def _trim_filter(settings: Settings) -> str:
-    threshold = _number(settings.audio_silence_threshold_db)
-    padding = _number(settings.audio_silence_padding_seconds)
-    return (
-        "silenceremove="
-        "start_periods=1:start_duration=0:"
-        f"start_threshold={threshold}dB:start_silence={padding}:"
-        "stop_periods=1:stop_duration=0:"
-        f"stop_threshold={threshold}dB:stop_silence={padding}"
+_SILENCE_START = re.compile(r"silence_start:\s*(-?\d+(?:\.\d+)?)")
+_SILENCE_END = re.compile(r"silence_end:\s*(-?\d+(?:\.\d+)?)")
+
+
+def _silence_intervals(
+    source: Path,
+    settings: Settings,
+    duration: int,
+) -> list[tuple[float, float]]:
+    result = _run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-nostdin",
+            "-i",
+            str(source),
+            "-map",
+            "0:a:0",
+            "-ac",
+            "1",
+            "-af",
+            (
+                "silencedetect="
+                f"noise={_number(settings.audio_silence_threshold_db)}dB:"
+                f"d={_number(settings.audio_silence_min_duration_seconds)}"
+            ),
+            "-f",
+            "null",
+            "-",
+        ]
     )
+    intervals: list[tuple[float, float]] = []
+    current_start: float | None = None
+    for line in result.stderr.splitlines():
+        start_match = _SILENCE_START.search(line)
+        if start_match is not None:
+            current_start = float(start_match.group(1))
+            continue
+        end_match = _SILENCE_END.search(line)
+        if end_match is not None and current_start is not None:
+            intervals.append((current_start, float(end_match.group(1))))
+            current_start = None
+    if current_start is not None:
+        intervals.append((current_start, float(duration)))
+    return intervals
+
+
+def _trim_filter(
+    source: Path,
+    settings: Settings,
+    duration: int,
+) -> str | None:
+    intervals = _silence_intervals(source, settings, duration)
+    if not intervals:
+        return None
+
+    padding = settings.audio_silence_padding_seconds
+    start = 0.0
+    end = float(duration)
+    if intervals[0][0] <= 0.05:
+        start = max(0.0, intervals[0][1] - padding)
+    if intervals[-1][1] >= duration - 0.05:
+        end = min(float(duration), intervals[-1][0] + padding)
+
+    if start <= 0.0 and end >= duration:
+        return None
+    if start >= end:
+        return None
+    if start > settings.audio_max_trim_seconds:
+        return None
+    if duration - end > settings.audio_max_trim_seconds:
+        return None
+    if end - start < duration * settings.audio_min_remaining_ratio:
+        return None
+    return f"atrim=start={start:.3f}:end={end:.3f}"
 
 
 def _analysis_filter(settings: Settings) -> str:
@@ -168,21 +236,17 @@ def probe_duration(path: Path) -> int:
     return duration
 
 
-def process_audio(
+def _encode(
     source: Path,
     destination: Path,
     settings: Settings,
+    *,
+    trim_filter: str | None,
 ) -> AudioProcessingResult:
-    source = Path(source)
-    destination = Path(destination)
-    if not source.is_file() or source.stat().st_size == 0:
-        raise AudioProcessingError("Audio source file is missing or empty.")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-
     filters: list[str] = []
     input_lufs: float | None = None
-    if settings.audio_trim_silence:
-        filters.append(_trim_filter(settings))
+    if trim_filter is not None:
+        filters.append(trim_filter)
     if settings.audio_normalize_loudness:
         measurements = _measure_loudness(source, filters, settings)
         input_lufs = _finite(measurements.get("input_i"))
@@ -224,6 +288,93 @@ def process_audio(
         duration_seconds=probe_duration(destination),
         input_lufs=input_lufs,
     )
+
+
+def _trim_is_unsafe(
+    source_duration: int,
+    processed_duration: int,
+    settings: Settings,
+) -> bool:
+    removed = source_duration - processed_duration
+    return (
+        processed_duration
+        < source_duration * settings.audio_min_remaining_ratio
+        or removed > settings.audio_max_trim_seconds
+    )
+
+
+def process_audio(
+    source: Path,
+    destination: Path,
+    settings: Settings,
+) -> AudioProcessingResult:
+    source = Path(source)
+    destination = Path(destination)
+    if not source.is_file() or source.stat().st_size == 0:
+        raise AudioProcessingError("Audio source file is missing or empty.")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    trim_filter: str | None = None
+    source_duration: int | None = None
+    if settings.audio_trim_silence:
+        source_duration = probe_duration(source)
+        try:
+            trim_filter = _trim_filter(
+                source,
+                settings,
+                source_duration,
+            )
+        except AudioProcessingError:
+            logger.warning(
+                "Silence detection failed for %s; using no trim",
+                source,
+            )
+
+    try:
+        result = _encode(
+            source,
+            destination,
+            settings,
+            trim_filter=trim_filter,
+        )
+    except AudioProcessingError:
+        if trim_filter is None:
+            raise
+        logger.warning(
+            "Trimming failed for %s; retrying without silence trim",
+            source,
+        )
+        return _encode(
+            source,
+            destination,
+            settings,
+            trim_filter=None,
+        )
+
+    if (
+        trim_filter is not None
+        and source_duration is not None
+        and _trim_is_unsafe(
+            source_duration,
+            result.duration_seconds,
+            settings,
+        )
+    ):
+        logger.warning(
+            "Silence trim removed too much from %s (%ss -> %ss); "
+            "retrying without trim",
+            source,
+            source_duration,
+            result.duration_seconds,
+        )
+        return _encode(
+            source,
+            destination,
+            settings,
+            trim_filter=None,
+        )
+
+    return result
 
 
 def find_original_file(

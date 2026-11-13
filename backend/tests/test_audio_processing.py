@@ -57,6 +57,27 @@ def _make_sample(path: Path) -> None:
     )
 
 
+def _make_one_channel_sample(path: Path) -> None:
+    _run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "aevalsrc=0|0.05*sin(2*PI*440*t):s=44100:d=4",
+            "-codec:a",
+            "libmp3lame",
+            "-q:a",
+            "2",
+            str(path),
+        ]
+    )
+
+
 def _duration(path: Path) -> float:
     result = _run(
         [
@@ -118,6 +139,40 @@ def test_process_audio_trims_edges_and_normalizes(tmp_path):
     assert 2.0 <= _duration(destination) <= 2.6
     assert result.duration_seconds in {2, 3}
     assert _loudness(destination) == pytest.approx(-14.0, abs=0.7)
+
+
+def test_process_audio_does_not_trim_one_silent_channel(tmp_path):
+    source = tmp_path / "one-channel.mp3"
+    destination = tmp_path / "processed.mp3"
+    _make_one_channel_sample(source)
+
+    settings = Settings(
+        audio_processing_enabled=True,
+        audio_trim_silence=True,
+        audio_normalize_loudness=True,
+    )
+    result = process_audio(source, destination, settings)
+
+    assert 3.8 <= _duration(destination) <= 4.2
+    assert result.duration_seconds == 4
+
+
+def test_process_audio_rejects_unsafe_trim(tmp_path):
+    source = tmp_path / "source.mp3"
+    destination = tmp_path / "processed.mp3"
+    _make_sample(source)
+
+    settings = Settings(
+        audio_processing_enabled=True,
+        audio_trim_silence=True,
+        audio_normalize_loudness=True,
+        audio_max_trim_seconds=0.1,
+        audio_min_remaining_ratio=0.95,
+    )
+    result = process_audio(source, destination, settings)
+
+    assert 3.8 <= _duration(destination) <= 4.2
+    assert result.duration_seconds == 4
 
 
 def test_process_audio_rejects_missing_source(tmp_path):

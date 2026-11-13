@@ -85,6 +85,7 @@ def _track_out(
         source_type=track.source_type,
         is_available=track.is_available,
         recording_key=track.recording_key,
+        stream_version=track.stream_version,
         play_count=play_count,
         last_played_at=last_played_at,
         created_at=track.created_at,
@@ -311,13 +312,20 @@ def delete_track(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Track file not found",
         )
-    if file_path.exists():
-        if not file_path.is_file():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Track file not found",
-            )
-        file_path.unlink()
+    if file_path.exists() and not file_path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Track file not found",
+        )
+
+    stem = file_path.stem
+    audio_paths = {
+        file_path,
+        media_root / "tracks" / f"{stem}.mp3",
+        media_root / "processed" / f"{stem}.mp3",
+    }
+    for audio_path in audio_paths:
+        audio_path.unlink(missing_ok=True)
 
     original_path = find_original_file(media_root, track.file_path)
     if original_path is not None:

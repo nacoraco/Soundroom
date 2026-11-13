@@ -40,6 +40,7 @@ export interface Track {
   source_type: TrackSource;
   is_available: boolean;
   recording_key: string;
+  stream_version: string;
   play_count?: number;
   last_played_at?: string | null;
   created_at: string;

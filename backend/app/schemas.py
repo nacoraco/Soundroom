@@ -87,6 +87,7 @@ class TrackOut(BaseModel):
     source_type: TrackSource
     is_available: bool
     recording_key: str = ""
+    stream_version: str = ""
     play_count: int = 0
     last_played_at: datetime | None = None
     created_at: datetime

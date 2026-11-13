@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import datetime
 from enum import StrEnum
@@ -176,6 +177,12 @@ class Track(Base):
 
     artist: Mapped[Artist] = relationship(back_populates="tracks")
     album: Mapped[Album | None] = relationship(back_populates="tracks")
+
+    @property
+    def stream_version(self) -> str:
+        return hashlib.sha256(
+            self.file_path.encode("utf-8")
+        ).hexdigest()[:12]
 
 
 class Playlist(Base):

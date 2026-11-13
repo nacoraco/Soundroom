@@ -68,6 +68,13 @@ import type {
   Track,
 } from "./types";
 
+function streamSource(track: Pick<Track, "id" | "stream_version">): string {
+  const version = track.stream_version
+    ? `?v=${encodeURIComponent(track.stream_version)}`
+    : "";
+  return `/api/tracks/${track.id}/stream${version}`;
+}
+
 export interface QueuedImport {
   id: string;
   videoId: string;
@@ -148,6 +155,7 @@ function queueItemToPlayerTrack(item: QueueItem): PlayerTrack {
     source_type: "youtube",
     is_available: false,
     recording_key: item.recording_key,
+    stream_version: "",
     created_at: new Date().toISOString(),
     pending: true,
     origin,
@@ -448,7 +456,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         Boolean(track.queue_item_id),
     );
     const signature = `${readyItems
-      .map((track) => track.queue_item_id)
+      .map(
+        (track) =>
+          `${track.queue_item_id}:${track.stream_version}`,
+      )
       .join("|")}#${current.queue_item_id}`;
     if (signature === nativeQueueSignatureRef.current) {
       return;
@@ -459,7 +470,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       queueItemId: track.queue_item_id as string,
       trackId: track.id,
       streamUrl: new URL(
-        `/api/tracks/${track.id}/stream`,
+        streamSource(track),
         window.location.origin,
       ).href,
       title: track.title,
@@ -726,7 +737,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const currentTrackId = currentTrack?.id ?? null;
   const currentSource =
     currentTrack && !currentTrack.pending
-      ? `/api/tracks/${currentTrack.id}/stream`
+      ? streamSource(currentTrack)
       : null;
   const playTrack = useCallback(
     (track: Track, queueTracks?: Track[]) => {
@@ -1150,7 +1161,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       if (!audio || track.pending) {
         return;
       }
-      const source = `/api/tracks/${track.id}/stream`;
+      const source = streamSource(track);
       const absoluteSource = new URL(source, window.location.href).href;
       if (audio.src === absoluteSource) {
         try {

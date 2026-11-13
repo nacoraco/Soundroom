@@ -38,6 +38,7 @@ function track(
     source_type: "upload",
     is_available: true,
     recording_key: id,
+    stream_version: "v1",
     created_at: "2026-11-08T00:00:00Z",
   };
 }

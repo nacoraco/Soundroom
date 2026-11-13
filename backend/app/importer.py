@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
-import os
 import re
 import shutil
 import subprocess
@@ -15,7 +14,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from .audio_processing import process_audio
@@ -25,6 +24,9 @@ from .llm_review import review_candidates_with_llm
 from . import queue_service
 from .models import (
     Artist,
+    QueueItem,
+    QueueItemStatus,
+    RadioSession,
     RipJob,
     RipJobStatus,
     Track,
@@ -448,6 +450,73 @@ def _fail_job(db: Session, job_id, message: str) -> None:
     queue_service.mark_job_failed(db, job_id, message)
 
 
+def _active_track_ids(db: Session) -> set:
+    return {
+        track_id
+        for track_id in db.scalars(
+            select(QueueItem.track_id)
+            .join(
+                RadioSession,
+                RadioSession.current_item_id == QueueItem.id,
+            )
+            .where(QueueItem.track_id.is_not(None))
+        )
+        if track_id is not None
+    }
+
+
+def activate_processed_audio(
+    db: Session,
+    config: Settings,
+) -> int:
+    media_root = Path(config.media_storage_path)
+    processed_dir = media_root / "processed"
+    if not processed_dir.is_dir():
+        return 0
+
+    active_track_ids = _active_track_ids(db)
+    activated = 0
+    tracks = db.scalars(
+        select(Track).where(
+            Track.is_available.is_(True),
+            Track.file_path.like("tracks/%"),
+        )
+    )
+    for track in tracks:
+        if track.id in active_track_ids:
+            continue
+        processed_path = processed_dir / f"{Path(track.file_path).stem}.mp3"
+        if not processed_path.is_file():
+            continue
+        try:
+            duration = probe_duration(processed_path)
+        except Exception:
+            logger.exception(
+                "Could not activate processed audio for track %s",
+                track.id,
+            )
+            continue
+        track.file_path = f"processed/{processed_path.name}"
+        track.duration_seconds = duration
+        db.add(track)
+        db.execute(
+            update(QueueItem)
+            .where(
+                QueueItem.track_id == track.id,
+                QueueItem.status == QueueItemStatus.ready,
+            )
+            .values(expected_duration_seconds=duration)
+        )
+        db.commit()
+        activated += 1
+        logger.info(
+            "Activated processed audio for track=%s duration=%ss",
+            track.id,
+            duration,
+        )
+    return activated
+
+
 def _publish_download(
     db: Session,
     job: RipJob,
@@ -583,37 +652,34 @@ def _publish_download(
             raise
 
         if config.audio_processing_enabled:
-            job_id = job.id
             track_id = job.track_id
-            processed_path = workdir / "processed.mp3"
+            processed_path = (
+                media_root / "processed" / f"{storage_id}.mp3"
+            )
             try:
                 processed = process_audio(source, processed_path, config)
-                os.replace(processed_path, final_path)
-                if track_id is not None:
-                    track = db.get(Track, track_id)
-                    if track is not None:
-                        track.duration_seconds = processed.duration_seconds
-                        db.add(track)
-                        db.commit()
-                        queue_service.mark_job_ready(
-                            db,
-                            job_id,
-                            track.id,
-                        )
+            except Exception:
+                db.rollback()
+                processed_path.unlink(missing_ok=True)
+                logger.exception(
+                    "Post-processing failed for track %s; keeping fast version",
+                    track_id,
+                )
+            else:
                 logger.info(
                     "Post-processed import track=%s duration=%ss input_lufs=%s",
                     track_id,
                     processed.duration_seconds,
                     processed.input_lufs,
                 )
-            except Exception:
-                db.rollback()
-                logger.exception(
-                    "Post-processing failed for track %s; keeping fast version",
-                    track_id,
-                )
-            finally:
-                processed_path.unlink(missing_ok=True)
+                try:
+                    activate_processed_audio(db, config)
+                except Exception:
+                    db.rollback()
+                    logger.exception(
+                        "Could not activate processed audio for track %s",
+                        track_id,
+                    )
 
 
 def process_job(
@@ -775,11 +841,17 @@ def run_worker() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    config = get_settings()
+    last_activation = 0.0
     while True:
         try:
             with SessionLocal() as db:
-                job = process_next_job(db)
+                job = process_next_job(db, config)
                 if job is None:
+                    now = time.monotonic()
+                    if now - last_activation >= 1.0:
+                        activate_processed_audio(db, config)
+                        last_activation = now
                     time.sleep(0.25)
         except Exception:
             logger.exception("Import worker loop failed")

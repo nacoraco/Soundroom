@@ -6,6 +6,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import hashlib
+
 import pytest
 from sqlalchemy import select
 
@@ -14,8 +16,20 @@ from app.audio_processing import (
     process_audio,
 )
 from app.config import Settings, get_settings
-from app.importer import process_next_job
-from app.models import AppSettings, RipJob, RipJobStatus, Track, User
+from app.importer import activate_processed_audio, process_next_job
+from app.models import (
+    AppSettings,
+    Artist,
+    QueueItem,
+    QueueItemSource,
+    QueueItemStatus,
+    RadioSession,
+    RipJob,
+    RipJobStatus,
+    Track,
+    TrackSource,
+    User,
+)
 from .utils import auth_headers, login
 
 pytestmark = pytest.mark.skipif(
@@ -69,6 +83,27 @@ def _make_one_channel_sample(path: Path) -> None:
             "lavfi",
             "-i",
             "aevalsrc=0|0.05*sin(2*PI*440*t):s=44100:d=4",
+            "-codec:a",
+            "libmp3lame",
+            "-q:a",
+            "2",
+            str(path),
+        ]
+    )
+
+
+def _make_tone(path: Path, seconds: int) -> None:
+    _run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency=440:duration={seconds}:sample_rate=44100",
             "-codec:a",
             "libmp3lame",
             "-q:a",
@@ -173,6 +208,82 @@ def test_process_audio_rejects_unsafe_trim(tmp_path):
 
     assert 3.8 <= _duration(destination) <= 4.2
     assert result.duration_seconds == 4
+
+
+def test_processed_audio_waits_until_track_is_not_current(
+    db_session,
+    tmp_path,
+    monkeypatch,
+):
+    raw_path = tmp_path / "tracks" / "test.mp3"
+    processed_path = tmp_path / "processed" / "test.mp3"
+    raw_path.parent.mkdir(parents=True)
+    processed_path.parent.mkdir(parents=True)
+    _make_sample(raw_path)
+    _make_tone(processed_path, 2)
+
+    admin = db_session.scalar(
+        select(User).where(User.email == "admin@example.com")
+    )
+    assert admin is not None
+    artist = Artist(name="Test Artist", normalized_name="test artist")
+    db_session.add(artist)
+    db_session.flush()
+    track = Track(
+        artist_id=artist.id,
+        title="Test Song",
+        normalized_title="test song",
+        canonical_artist="Test Artist",
+        canonical_title="Test Song",
+        recording_key="test-artist::test-song",
+        duration_seconds=4,
+        file_path="tracks/test.mp3",
+        mime_type="audio/mpeg",
+        source_type=TrackSource.youtube,
+        audio_sha256=hashlib.sha256(raw_path.read_bytes()).hexdigest(),
+        is_available=True,
+    )
+    db_session.add(track)
+    db_session.flush()
+    item = QueueItem(
+        user_id=admin.id,
+        position=0,
+        track_id=track.id,
+        recording_key=track.recording_key,
+        title=track.title,
+        artist=track.canonical_artist,
+        expected_duration_seconds=4,
+        source=QueueItemSource.manual,
+        status=QueueItemStatus.ready,
+    )
+    db_session.add(item)
+    db_session.flush()
+    session = RadioSession(
+        user_id=admin.id,
+        current_item_id=item.id,
+        is_playing=True,
+    )
+    db_session.add(session)
+    db_session.commit()
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "media_storage_path", str(tmp_path))
+
+    assert activate_processed_audio(db_session, settings) == 0
+    db_session.refresh(track)
+    assert track.file_path == "tracks/test.mp3"
+    assert track.duration_seconds == 4
+
+    session.current_item_id = None
+    db_session.add(session)
+    db_session.commit()
+
+    assert activate_processed_audio(db_session, settings) == 1
+    db_session.refresh(track)
+    db_session.refresh(item)
+    assert track.file_path == "processed/test.mp3"
+    assert track.duration_seconds == 2
+    assert item.expected_duration_seconds == 2
 
 
 def test_process_audio_rejects_missing_source(tmp_path):

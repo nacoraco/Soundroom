@@ -530,9 +530,7 @@ public class PlaybackService extends MediaLibraryService {
         ) {
             mergeQueuePreservingCurrent(newItems);
             saveQueueFromPlayer();
-            if (!player.isPlaying()) {
-                notifyLibraryChanged(player.getMediaItemCount());
-            }
+            notifyLibraryChanged(player.getMediaItemCount());
             notifyState();
             return;
         }
@@ -554,9 +552,7 @@ public class PlaybackService extends MediaLibraryService {
             applyPlaybackIntent(player.getPlayWhenReady());
         }
         saveQueueFromPlayer();
-        if (!player.isPlaying()) {
-            notifyLibraryChanged(newItems.size());
-        }
+        notifyLibraryChanged(newItems.size());
         notifyState();
     }
 
@@ -1251,9 +1247,7 @@ public class PlaybackService extends MediaLibraryService {
 
         mergeQueuePreservingCurrent(items);
         saveQueueFromPlayer();
-        if (!player.isPlaying()) {
-            notifyLibraryChanged(player.getMediaItemCount());
-        }
+        notifyLibraryChanged(player.getMediaItemCount());
         notifyState();
     }
 

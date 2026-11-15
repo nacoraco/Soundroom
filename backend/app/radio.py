@@ -40,12 +40,13 @@ FALLBACK_COMPLETION_MIN = 0.5
 FALLBACK_SEED_LIMIT = 5
 MAX_SEEDS = 10
 RECENT_EXCLUDE_LIMIT = 100
-REJECTION_TTL_DAYS = 30
+REJECTION_TTL_DAYS = 7
+SKIP_TTL_DAYS = 1
+SKIP_ESCALATION_WINDOW_DAYS = 7
+SKIP_ESCALATION_COUNT = 3
+SKIP_ESCALATION_TTL_DAYS = 30
 NOT_NOW_TTL_DAYS = 7
 FAILED_TTL_DAYS = 1
-ARTIST_PENALTY_LOOKBACK_DAYS = 30
-ARTIST_PENALTY_PER_REJECTION = 0.25
-ARTIST_PENALTY_FLOOR = 0.35
 DEFAULT_BATCH_LIMIT = 10
 ARTIST_BATCH_CAP = 2
 RELAXED_ARTIST_CAP = 3
@@ -218,7 +219,7 @@ def select_seeds(
             db, user_id, FALLBACK_COMPLETION_MIN, FALLBACK_SEED_LIMIT
         )
 
-    rejected_keys, _artist_penalties = active_feedback(db, user_id)
+    rejected_keys = active_feedback(db, user_id)
     recent = [
         seed for seed in recent if seed.recording_key not in rejected_keys
     ]
@@ -252,11 +253,11 @@ def select_seeds(
 def active_feedback(
     db: Session,
     user_id: UUID,
-) -> tuple[set[str], dict[str, float]]:
-    """Return rejected recordings and soft per-artist score penalties.
+) -> set[str]:
+    """Return rejected recordings.
 
-    Artists are never hard-blocked. A recent rejection only downranks that
-    artist so other recordings by them can still surface.
+    Feedback applies only to the rejected recording. It never blocks or
+    downranks the artist's other songs.
     """
     now = datetime.now(timezone.utc)
     rows = db.scalars(
@@ -269,27 +270,7 @@ def active_feedback(
             ),
         )
     ).all()
-    cutoff = now - timedelta(days=ARTIST_PENALTY_LOOKBACK_DAYS)
-    artist_counts = Counter(
-        normalize_text(row.artist)
-        for row in rows
-        if _as_utc(row.created_at) >= cutoff
-    )
-    artist_penalties = {
-        artist: max(
-            ARTIST_PENALTY_FLOOR,
-            1.0 - ARTIST_PENALTY_PER_REJECTION * count,
-        )
-        for artist, count in artist_counts.items()
-        if artist
-    }
-    return {row.recording_key for row in rows}, artist_penalties
-
-
-def _as_utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value
+    return {row.recording_key for row in rows}
 
 
 def recent_listen_keys(db: Session, user_id: UUID) -> set[str]:
@@ -604,16 +585,12 @@ def rank_candidates(
     candidates: dict[str, RadioCandidate],
     profile: DiscoveryProfile,
     rng: random.Random | None = None,
-    artist_penalties: dict[str, float] | None = None,
 ) -> list[RadioCandidate]:
     rng = rng or random.Random()
-    penalties = artist_penalties or {}
     ranked = list(candidates.values())
     for candidate in ranked:
-        penalty = penalties.get(normalize_text(candidate.artist), 1.0)
         candidate.rank_score = (
             candidate.score
-            * penalty
             * rng.uniform(1 - profile.jitter, 1 + profile.jitter)
         )
     return sorted(
@@ -714,7 +691,7 @@ def build_radio_batch(
     if not seeds:
         return [], 0
 
-    rejected_keys, artist_penalties = active_feedback(db, user_id)
+    rejected_keys = active_feedback(db, user_id)
     recent_keys = recent_listen_keys(db, user_id)
     queue_keys = {key for key in (exclude or []) if key}
     local_index = local_track_index(db)
@@ -734,7 +711,6 @@ def build_radio_batch(
         filtered,
         profile,
         rng=rng,
-        artist_penalties=artist_penalties,
     )
     selected = select_batch(ranked, limit, profile)
 
@@ -760,7 +736,6 @@ def build_radio_batch(
             filtered,
             profile,
             rng=rng,
-            artist_penalties=artist_penalties,
         )
         selected = select_batch(ranked, limit, profile)
 
@@ -792,10 +767,40 @@ def set_feedback(
         return None
 
     now = datetime.now(timezone.utc)
+    entry = db.scalar(
+        select(RadioFeedback).where(
+            RadioFeedback.user_id == user_id,
+            RadioFeedback.recording_key == recording_key,
+        )
+    )
+
+    skip_count = 0
+    skip_window_started_at = None
     if verdict == "like":
         expires_at = None
     elif reason == "never":
         expires_at = None
+    elif reason == "skip":
+        window_start = (
+            _as_utc(entry.skip_window_started_at)
+            if entry is not None and entry.skip_window_started_at is not None
+            else None
+        )
+        within_window = (
+            window_start is not None
+            and now - window_start
+            <= timedelta(days=SKIP_ESCALATION_WINDOW_DAYS)
+        )
+        if within_window:
+            skip_count = (entry.skip_count or 0) + 1
+            skip_window_started_at = window_start
+        else:
+            skip_count = 1
+            skip_window_started_at = now
+        if skip_count >= SKIP_ESCALATION_COUNT:
+            expires_at = now + timedelta(days=SKIP_ESCALATION_TTL_DAYS)
+        else:
+            expires_at = now + timedelta(days=SKIP_TTL_DAYS)
     elif reason == "not_now":
         expires_at = now + timedelta(days=NOT_NOW_TTL_DAYS)
     elif reason == "failed":
@@ -803,12 +808,6 @@ def set_feedback(
     else:
         expires_at = now + timedelta(days=REJECTION_TTL_DAYS)
 
-    entry = db.scalar(
-        select(RadioFeedback).where(
-            RadioFeedback.user_id == user_id,
-            RadioFeedback.recording_key == recording_key,
-        )
-    )
     if entry is None:
         entry = RadioFeedback(
             user_id=user_id,
@@ -818,6 +817,8 @@ def set_feedback(
             verdict=RadioFeedbackVerdict(verdict),
             reason=reason,
             track_id=track_id,
+            skip_count=skip_count,
+            skip_window_started_at=skip_window_started_at,
             expires_at=expires_at,
         )
         db.add(entry)
@@ -827,6 +828,8 @@ def set_feedback(
         entry.verdict = RadioFeedbackVerdict(verdict)
         entry.reason = reason
         entry.track_id = track_id
+        entry.skip_count = skip_count
+        entry.skip_window_started_at = skip_window_started_at
         entry.expires_at = expires_at
         entry.created_at = now
     db.commit()
@@ -834,6 +837,12 @@ def set_feedback(
 
     _trim_feedback(db, user_id)
     return entry
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
 
 
 def _trim_feedback(db: Session, user_id: UUID) -> None:

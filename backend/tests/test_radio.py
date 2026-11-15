@@ -351,7 +351,7 @@ def test_artist_cap_keeps_at_most_two_per_ten(db_session):
     assert {candidate.artist for candidate in selected} == {"Same Artist"}
 
 
-def test_feedback_penalizes_artist_without_blocking(db_session):
+def test_feedback_rejects_only_the_skipped_recordings(db_session):
     user = admin(db_session)
     for index in range(2):
         set_feedback(
@@ -363,9 +363,8 @@ def test_feedback_penalizes_artist_without_blocking(db_session):
             verdict="reject",
             reason="skip",
         )
-    rejected_keys, artist_penalties = active_feedback(db_session, user.id)
-    assert len(rejected_keys) == 2
-    assert artist_penalties[normalize_text("Penalized Artist")] == 0.5
+    rejected_keys = active_feedback(db_session, user.id)
+    assert rejected_keys == {"reject-0", "reject-1"}
 
     set_feedback(
         db_session,
@@ -375,12 +374,93 @@ def test_feedback_penalizes_artist_without_blocking(db_session):
         title="Rejected 0",
         verdict="clear",
     )
-    rejected_keys, artist_penalties = active_feedback(db_session, user.id)
-    assert "reject-0" not in rejected_keys
-    assert artist_penalties[normalize_text("Penalized Artist")] == 0.75
+    rejected_keys = active_feedback(db_session, user.id)
+    assert rejected_keys == {"reject-1"}
 
 
-def test_penalized_artist_is_not_hard_blocked(db_session):
+def _remaining_time(feedback):
+    expires_at = feedback.expires_at
+    assert expires_at is not None
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    return expires_at - datetime.now(timezone.utc)
+
+
+def test_first_skip_expires_after_one_day(db_session):
+    user = admin(db_session)
+    feedback = set_feedback(
+        db_session,
+        user.id,
+        recording_key="short-reject",
+        artist="Artist",
+        title="Skipped Song",
+        verdict="reject",
+        reason="skip",
+    )
+
+    assert feedback is not None
+    assert feedback.skip_count == 1
+    remaining = _remaining_time(feedback)
+    assert timedelta(hours=23) <= remaining <= timedelta(days=1, minutes=1)
+
+
+def test_third_skip_within_week_expires_after_thirty_days(db_session):
+    user = admin(db_session)
+    feedback = None
+    for _ in range(3):
+        feedback = set_feedback(
+            db_session,
+            user.id,
+            recording_key="repeat-reject",
+            artist="Artist",
+            title="Skipped Song",
+            verdict="reject",
+            reason="skip",
+        )
+
+    assert feedback is not None
+    assert feedback.skip_count == 3
+    remaining = _remaining_time(feedback)
+    assert timedelta(days=29, hours=23) <= remaining <= timedelta(
+        days=30, minutes=1
+    )
+
+
+def test_skip_window_resets_after_a_week(db_session):
+    user = admin(db_session)
+    for _ in range(2):
+        feedback = set_feedback(
+            db_session,
+            user.id,
+            recording_key="reset-reject",
+            artist="Artist",
+            title="Skipped Song",
+            verdict="reject",
+            reason="skip",
+        )
+    feedback.skip_window_started_at = datetime.now(timezone.utc) - timedelta(
+        days=8
+    )
+    db_session.add(feedback)
+    db_session.commit()
+
+    feedback = set_feedback(
+        db_session,
+        user.id,
+        recording_key="reset-reject",
+        artist="Artist",
+        title="Skipped Song",
+        verdict="reject",
+        reason="skip",
+    )
+
+    assert feedback is not None
+    assert feedback.skip_count == 1
+    remaining = _remaining_time(feedback)
+    assert timedelta(hours=23) <= remaining <= timedelta(days=1, minutes=1)
+
+
+def test_rejected_artist_does_not_block_other_songs(db_session):
     user = admin(db_session)
     seed = make_track(db_session, "Seed Song", "Seed Artist")
     add_listen(db_session, seed, 0.95)
@@ -444,7 +524,7 @@ def test_manual_play_clears_never_rejection(db_session):
         source="manual",
     )
 
-    rejected_keys, _ = active_feedback(db_session, user.id)
+    rejected_keys = active_feedback(db_session, user.id)
     assert track.recording_key not in rejected_keys
 
 
@@ -471,7 +551,7 @@ def test_radio_playback_does_not_clear_never_rejection(db_session):
         source="radio",
     )
 
-    rejected_keys, _ = active_feedback(db_session, user.id)
+    rejected_keys = active_feedback(db_session, user.id)
     assert track.recording_key in rejected_keys
 
 
@@ -499,7 +579,7 @@ def test_record_listen_clears_rejection_after_completion(db_session):
     )
 
     assert listen.completion_ratio == 1.0
-    rejected_keys, _ = active_feedback(db_session, user.id)
+    rejected_keys = active_feedback(db_session, user.id)
     assert track.recording_key not in rejected_keys
 
 

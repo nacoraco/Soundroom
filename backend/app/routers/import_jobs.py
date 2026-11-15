@@ -24,7 +24,8 @@ from ..text import normalize_text
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/import-jobs", tags=["import-jobs"])
-PREVIEW_LIMIT = 8
+PREVIEW_PAGE_SIZE = 8
+PREVIEW_MAX_RESULTS = 32
 
 
 @router.get("/config", response_model=ImportJobConfig)
@@ -42,6 +43,8 @@ def import_config(
 @router.get("/preview", response_model=ImportPreview)
 def preview_import_candidates(
     q: str = Query(min_length=3, max_length=300),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=PREVIEW_PAGE_SIZE, ge=1),
     _: AuthContext = Depends(get_current_auth),
     db: Session = Depends(get_db),
 ) -> ImportPreview:
@@ -59,8 +62,13 @@ def preview_import_candidates(
             detail="Enter at least 3 characters.",
         )
 
+    page_size = min(limit, PREVIEW_MAX_RESULTS)
+    fetch_limit = min(
+        PREVIEW_MAX_RESULTS,
+        offset + page_size + 1,
+    )
     try:
-        candidates = search_candidates(query_text, limit=PREVIEW_LIMIT)
+        candidates = search_candidates(query_text, limit=fetch_limit)
     except Exception as exc:
         logger.exception("External import preview failed for %r", query_text)
         raise HTTPException(
@@ -70,12 +78,12 @@ def preview_import_candidates(
 
     max_seconds = max(1, settings.max_track_minutes) * 60
     ranked = rank_candidates(query_text, candidates, None)
-    preview_candidates: list[ImportPreviewCandidate] = []
+    all_candidates: list[ImportPreviewCandidate] = []
     for _, candidate in ranked:
         if candidate.video_id is None:
             continue
         duration = candidate.duration_seconds
-        preview_candidates.append(
+        all_candidates.append(
             ImportPreviewCandidate(
                 video_id=candidate.video_id,
                 url=candidate.url,
@@ -91,10 +99,14 @@ def preview_import_candidates(
             )
         )
 
+    page_candidates = all_candidates[offset : offset + page_size]
     return ImportPreview(
         query=query_text,
         max_track_minutes=settings.max_track_minutes,
-        candidates=preview_candidates,
+        candidates=page_candidates,
+        offset=offset,
+        limit=page_size,
+        has_more=offset + page_size < len(all_candidates),
     )
 
 

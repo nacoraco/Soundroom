@@ -104,8 +104,11 @@ def test_preview_lists_ranked_releases_without_creating_a_job(
 
     assert response.status_code == 200
     payload = response.json()
-    assert seen == {"query": "Test Song", "limit": 8}
+    assert seen == {"query": "Test Song", "limit": 9}
     assert payload["max_track_minutes"] == 5
+    assert payload["offset"] == 0
+    assert payload["limit"] == 8
+    assert payload["has_more"] is False
     assert [item["video_id"] for item in payload["candidates"]] == [
         "abcdefghijk",
         "lmnopqrstuv",
@@ -118,6 +121,55 @@ def test_preview_lists_ranked_releases_without_creating_a_job(
     assert payload["candidates"][1]["within_duration_limit"] is False
     assert payload["candidates"][2]["within_duration_limit"] is False
     assert db_session.scalar(select(func.count(RipJob.id))) == 0
+
+
+def test_preview_paginates_external_releases(
+    client: TestClient, monkeypatch
+):
+    headers = admin_headers(client)
+    enable_import(client, headers, max_minutes=5)
+    candidate_ids = [f"vid{index:08d}" for index in range(12)]
+    seen_limits: list[int] = []
+
+    def fake_search(query: str, limit: int = 5):
+        seen_limits.append(limit)
+        return [
+            sample_candidate(
+                candidate_id,
+                f"Test Song {index + 1}",
+                duration=120,
+            )
+            for index, candidate_id in enumerate(candidate_ids[:limit])
+        ]
+
+    monkeypatch.setattr(import_jobs, "search_candidates", fake_search)
+
+    def fetch(offset: int, limit: int = 4) -> dict:
+        response = client.get(
+            "/api/import-jobs/preview",
+            params={"q": "Test Song", "offset": offset, "limit": limit},
+            headers=headers,
+        )
+        assert response.status_code == 200
+        return response.json()
+
+    first_page = fetch(0)
+    second_page = fetch(4)
+    third_page = fetch(8)
+
+    assert [item["video_id"] for item in first_page["candidates"]] == (
+        candidate_ids[:4]
+    )
+    assert first_page["has_more"] is True
+    assert [item["video_id"] for item in second_page["candidates"]] == (
+        candidate_ids[4:8]
+    )
+    assert second_page["has_more"] is True
+    assert [item["video_id"] for item in third_page["candidates"]] == (
+        candidate_ids[8:12]
+    )
+    assert third_page["has_more"] is False
+    assert seen_limits == [5, 9, 13]
 
 
 def test_preview_reports_external_search_failure(

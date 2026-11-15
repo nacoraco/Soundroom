@@ -186,6 +186,9 @@ class ImportPreview(BaseModel):
     query: str
     max_track_minutes: int
     candidates: list[ImportPreviewCandidate]
+    offset: int
+    limit: int
+    has_more: bool
 
 
 class ImportJobConfig(BaseModel):

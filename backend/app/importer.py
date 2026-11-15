@@ -200,7 +200,7 @@ def _candidate_thumbnail(entry: dict) -> str | None:
 def search_candidates(query: str, limit: int = 5) -> list[Candidate]:
     import yt_dlp
 
-    limit = max(1, min(limit, 10))
+    limit = max(1, min(limit, 32))
     options = {
         "quiet": True,
         "no_warnings": True,

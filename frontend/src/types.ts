@@ -105,6 +105,9 @@ export interface ImportPreview {
   query: string;
   max_track_minutes: number;
   candidates: ImportPreviewCandidate[];
+  offset: number;
+  limit: number;
+  has_more: boolean;
 }
 
 export interface ImportCandidateSelectionInput {

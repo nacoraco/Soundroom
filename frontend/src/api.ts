@@ -430,10 +430,16 @@ export async function getImportConfig(): Promise<ImportConfig> {
 
 export async function previewImportCandidates(
   query: string,
+  options?: { offset?: number; limit?: number },
 ): Promise<ImportPreview> {
-  return request<ImportPreview>(
-    `/api/import-jobs/preview?q=${encodeURIComponent(query)}`,
-  );
+  const params = new URLSearchParams({ q: query });
+  if (options?.offset) {
+    params.set("offset", String(options.offset));
+  }
+  if (options?.limit) {
+    params.set("limit", String(options.limit));
+  }
+  return request<ImportPreview>(`/api/import-jobs/preview?${params}`);
 }
 
 export async function createImportJob(

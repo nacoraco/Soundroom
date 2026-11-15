@@ -110,6 +110,7 @@ export function LibraryPage() {
     !tracksQuery.isFetching &&
     !isSearching &&
     total === 0;
+  const showExternalResults = showResults && isSearching && page === 1;
 
   useEffect(() => {
     if (
@@ -467,6 +468,14 @@ export function LibraryPage() {
                 </span>
               </li>
             ))}
+            {showExternalResults && (
+              <ImportRequest
+                query={query}
+                hasLocalResults
+                embedded
+                startIndex={lastResult}
+              />
+            )}
           </ol>
 
           {notice && (
@@ -503,12 +512,6 @@ export function LibraryPage() {
             Playback continues while you browse. Open the console below for the
             full queue.
           </p>
-        </section>
-      )}
-
-      {showResults && isSearching && page === 1 && (
-        <section className="panel external-results">
-          <ImportRequest query={query} hasLocalResults />
         </section>
       )}
     </section>

@@ -205,6 +205,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const nativeEndedHandledRef = useRef(false);
   const nativeInitializedRef = useRef(false);
   const [nativeReady, setNativeReady] = useState(false);
+  const [nativeQueueDirty, setNativeQueueDirty] = useState(false);
 
   const queueQuery = useQuery({
     queryKey: ["queue"],
@@ -313,10 +314,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     async (
       mutation: () => Promise<QueueState>,
       applyPlayback = false,
+      syncNative = true,
     ) => {
       const sequence = beginQueueMutation();
       try {
         const nextState = await mutation();
+        if (syncNative) {
+          setNativeQueueDirty(true);
+        }
         if (sequence === queueMutationSeqRef.current) {
           syncQueueState(nextState, applyPlayback);
         }
@@ -362,7 +367,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       return;
     }
     refillInFlightRef.current = true;
-    void runQueueMutation(() => refillQueue())
+    void runQueueMutation(() => refillQueue(), false, false)
       .catch(() => {
         refillCooldownRef.current = Date.now() + 30_000;
         window.setTimeout(() => {
@@ -460,6 +465,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     if (!nativePlayback || !nativeReady) {
       return;
     }
+    if (!nativeQueueDirty) {
+      return;
+    }
+    setNativeQueueDirty(false);
     const snapshot = stateRef.current;
     const current = snapshot.queue[snapshot.currentIndex];
     if (!current || current.pending || !current.queue_item_id) {
@@ -521,6 +530,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       });
   }, [
     nativePlayback,
+    nativeQueueDirty,
     nativeReady,
     state.currentIndex,
     state.currentTime,

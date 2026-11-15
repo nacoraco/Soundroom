@@ -3,9 +3,12 @@ package com.soundroom.app;
 import android.app.PendingIntent;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.hardware.display.DisplayManager;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
+import android.view.Display;
 import android.webkit.CookieManager;
 
 import androidx.annotation.Nullable;
@@ -33,17 +36,32 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import okhttp3.Cookie;
 import okhttp3.CookieJar;
 import okhttp3.HttpUrl;
+import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
 
 @UnstableApi
 public class PlaybackService extends MediaLibraryService {
+
+    private static final String TAG = "SoundroomPlayback";
+    private static final String DEFAULT_BASE_URL =
+        "https://soundroom.nacoraco.com";
+    private static final String SERVER_URL_KEY = "server_url";
+    private static final MediaType JSON_TYPE = MediaType.get(
+        "application/json; charset=utf-8"
+    );
 
     public static final String ROOT_ID = "soundroom-root";
 
@@ -77,8 +95,19 @@ public class PlaybackService extends MediaLibraryService {
     private ExoPlayer player;
     private MediaLibrarySession session;
     private SharedPreferences preferences;
+    private OkHttpClient httpClient;
     private Handler handler;
     private Runnable ticker;
+    private final ExecutorService queueExecutor =
+        Executors.newSingleThreadExecutor();
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private volatile boolean queueRequestInFlight;
+    private long lastServerSyncAt;
+    private long lastRefillAt;
+    private String lastLibrarySignature = "";
+    private DisplayManager displayManager;
+    private boolean wasProjected;
+    private DisplayManager.DisplayListener displayListener;
 
     private volatile JSONObject lastState = new JSONObject();
     private String lastMediaId = "";
@@ -151,7 +180,8 @@ public class PlaybackService extends MediaLibraryService {
         JSONArray items,
         @Nullable String currentMediaId,
         long positionMs,
-        boolean playWhenReady
+        boolean playWhenReady,
+        boolean forceCurrent
     ) {
         if (instance == null) {
             pendingQueueJson = items.toString();
@@ -167,7 +197,8 @@ public class PlaybackService extends MediaLibraryService {
                     items,
                     currentMediaId,
                     positionMs,
-                    playWhenReady
+                    playWhenReady,
+                    forceCurrent
                 );
             }
         });
@@ -261,6 +292,9 @@ public class PlaybackService extends MediaLibraryService {
         super.onCreate();
         instance = this;
         preferences = getSharedPreferences(PREFS, MODE_PRIVATE);
+        httpClient = new OkHttpClient.Builder()
+            .cookieJar(new WebViewCookieJar())
+            .build();
         setMediaNotificationProvider(
             new DefaultMediaNotificationProvider.Builder(this)
                 .setChannelId("soundroom_playback")
@@ -274,6 +308,7 @@ public class PlaybackService extends MediaLibraryService {
             new LibraryCallback()
         )
             .setSessionActivity(buildSessionActivity())
+            .setPeriodicPositionUpdateEnabled(false)
             .build();
         addSession(session);
         player.addListener(new PlayerEvents());
@@ -305,6 +340,11 @@ public class PlaybackService extends MediaLibraryService {
             }
         };
         handler.post(ticker);
+        registerProjectionListener();
+        mainHandler.postDelayed(
+            () -> refreshServerQueue(false),
+            1200
+        );
     }
 
     @Override
@@ -335,14 +375,69 @@ public class PlaybackService extends MediaLibraryService {
             session.release();
             session = null;
         }
+        if (displayManager != null && displayListener != null) {
+            displayManager.unregisterDisplayListener(displayListener);
+        }
+        queueExecutor.shutdownNow();
         instance = null;
         super.onDestroy();
     }
 
+    private void registerProjectionListener() {
+        displayManager = (DisplayManager) getSystemService(DISPLAY_SERVICE);
+        if (displayManager == null) {
+            return;
+        }
+        wasProjected = hasProjectionDisplay();
+        displayListener = new DisplayManager.DisplayListener() {
+            @Override
+            public void onDisplayAdded(int displayId) {
+                if (hasProjectionDisplay()) {
+                    wasProjected = true;
+                }
+            }
+
+            @Override
+            public void onDisplayChanged(int displayId) {
+            }
+
+            @Override
+            public void onDisplayRemoved(int displayId) {
+                boolean projectedNow = hasProjectionDisplay();
+                if (wasProjected && !projectedNow) {
+                    wasProjected = false;
+                    if (player != null && player.isPlaying()) {
+                        Log.i(TAG, "Car projection ended; pausing playback");
+                        player.pause();
+                        pushPlaybackStateToServer(true);
+                    }
+                }
+            }
+        };
+        displayManager.registerDisplayListener(
+            displayListener,
+            mainHandler
+        );
+    }
+
+    private boolean hasProjectionDisplay() {
+        if (displayManager == null) {
+            return false;
+        }
+        for (Display display : displayManager.getDisplays()) {
+            if (display.getDisplayId() != Display.DEFAULT_DISPLAY) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private ExoPlayer buildPlayer() {
-        OkHttpClient client = new OkHttpClient.Builder()
-            .cookieJar(new WebViewCookieJar())
-            .build();
+        OkHttpClient client = httpClient != null
+            ? httpClient
+            : new OkHttpClient.Builder()
+                .cookieJar(new WebViewCookieJar())
+                .build();
         DataSource.Factory dataSourceFactory = new OkHttpDataSource.Factory(
             client
         ).setUserAgent("Soundroom-Android");
@@ -418,61 +513,154 @@ public class PlaybackService extends MediaLibraryService {
         JSONArray items,
         @Nullable String currentMediaId,
         long positionMs,
-        boolean playWhenReady
+        boolean playWhenReady,
+        boolean forceCurrent
     ) {
         List<MediaItem> newItems = buildMediaItems(items);
         if (newItems.isEmpty()) {
             return;
         }
+        String activeMediaId = currentMediaId();
+        int activeIndex = indexOfMediaId(newItems, activeMediaId);
+
+        if (
+            !activeMediaId.isEmpty() &&
+            activeIndex >= 0 &&
+            (!forceCurrent || activeMediaId.equals(currentMediaId))
+        ) {
+            mergeQueuePreservingCurrent(newItems);
+            saveQueueFromPlayer();
+            if (!player.isPlaying()) {
+                notifyLibraryChanged(player.getMediaItemCount());
+            }
+            notifyState();
+            return;
+        }
+
         int newIndex = indexOfMediaId(newItems, currentMediaId);
         if (newIndex == -1) {
-            newIndex = player.getCurrentMediaItemIndex();
+            newIndex = Math.max(
+                0,
+                Math.min(
+                    player.getCurrentMediaItemIndex(),
+                    newItems.size() - 1
+                )
+            );
         }
-        int existingCount = player.getMediaItemCount();
-        boolean sameCurrent = player.getCurrentMediaItem() != null &&
-            currentMediaId != null &&
-            currentMediaId.equals(player.getCurrentMediaItem().mediaId);
+        player.setMediaItems(newItems, newIndex, Math.max(0, positionMs));
+        if (forceCurrent || activeMediaId.isEmpty()) {
+            applyPlaybackIntent(playWhenReady);
+        } else {
+            applyPlaybackIntent(player.getPlayWhenReady());
+        }
+        saveQueueFromPlayer();
+        if (!player.isPlaying()) {
+            notifyLibraryChanged(newItems.size());
+        }
+        notifyState();
+    }
 
-        if (sameCurrent && existingCount > 0) {
-            boolean prefix = existingCount <= newItems.size();
-            if (prefix) {
-                for (int i = 0; i < existingCount; i++) {
-                    if (!player.getMediaItemAt(i).mediaId.equals(
-                            newItems.get(i).mediaId
-                        )) {
-                        prefix = false;
-                        break;
-                    }
+    private void mergeQueuePreservingCurrent(List<MediaItem> newItems) {
+        String activeMediaId = currentMediaId();
+        if (activeMediaId.isEmpty()) {
+            return;
+        }
+        java.util.Set<String> desiredIds = new java.util.HashSet<>();
+        for (MediaItem item : newItems) {
+            desiredIds.add(item.mediaId);
+        }
+
+        for (int i = player.getMediaItemCount() - 1; i >= 0; i--) {
+            if (i == player.getCurrentMediaItemIndex()) {
+                continue;
+            }
+            if (!desiredIds.contains(player.getMediaItemAt(i).mediaId)) {
+                player.removeMediaItem(i);
+            }
+        }
+
+        for (MediaItem desired : newItems) {
+            int existingIndex = indexOfMediaId(currentPlaylist(), desired.mediaId);
+            if (existingIndex == -1) {
+                player.addMediaItem(desired);
+                continue;
+            }
+            if (existingIndex != player.getCurrentMediaItemIndex()) {
+                MediaItem existing = player.getMediaItemAt(existingIndex);
+                if (!sameMediaSource(existing, desired)) {
+                    player.replaceMediaItem(existingIndex, desired);
                 }
             }
-            if (prefix && newItems.size() > existingCount) {
-                player.addMediaItems(
-                    newItems.subList(existingCount, newItems.size())
-                );
-                applyPlaybackIntent(playWhenReady);
-            } else if (prefix && newItems.size() < existingCount) {
-                player.removeMediaItems(newItems.size(), existingCount);
-                applyPlaybackIntent(playWhenReady);
-            } else {
-                long currentPosition = player.getCurrentPosition();
-                player.setMediaItems(newItems, newIndex, currentPosition);
-                applyPlaybackIntent(playWhenReady);
-            }
-        } else {
-            player.setMediaItems(newItems, newIndex, Math.max(0, positionMs));
-            applyPlaybackIntent(playWhenReady);
         }
-        String activeMediaId = player.getCurrentMediaItem() != null
-            ? player.getCurrentMediaItem().mediaId
-            : currentMediaId;
+    }
+
+    private boolean sameMediaSource(MediaItem first, MediaItem second) {
+        Uri firstUri = first.localConfiguration != null
+            ? first.localConfiguration.uri
+            : null;
+        Uri secondUri = second.localConfiguration != null
+            ? second.localConfiguration.uri
+            : null;
+        return firstUri != null && firstUri.equals(secondUri);
+    }
+
+    private List<MediaItem> currentPlaylist() {
+        List<MediaItem> playlist = new ArrayList<>();
+        for (int i = 0; i < player.getMediaItemCount(); i++) {
+            playlist.add(player.getMediaItemAt(i));
+        }
+        return playlist;
+    }
+
+    private void saveQueueFromPlayer() {
+        JSONArray items = new JSONArray();
+        for (int i = 0; i < player.getMediaItemCount(); i++) {
+            MediaItem item = player.getMediaItemAt(i);
+            JSONObject entry = new JSONObject();
+            try {
+                entry.put("mediaId", item.mediaId);
+                entry.put("queueItemId", item.mediaId);
+                entry.put(
+                    "streamUrl",
+                    item.localConfiguration != null &&
+                        item.localConfiguration.uri != null
+                        ? item.localConfiguration.uri.toString()
+                        : ""
+                );
+                entry.put(
+                    "title",
+                    item.mediaMetadata.title != null
+                        ? item.mediaMetadata.title.toString()
+                        : "Soundroom"
+                );
+                entry.put(
+                    "artist",
+                    item.mediaMetadata.artist != null
+                        ? item.mediaMetadata.artist.toString()
+                        : ""
+                );
+                entry.put(
+                    "album",
+                    item.mediaMetadata.albumTitle != null
+                        ? item.mediaMetadata.albumTitle.toString()
+                        : ""
+                );
+                entry.put(
+                    "durationMs",
+                    item.mediaMetadata.durationMs != null
+                        ? item.mediaMetadata.durationMs
+                        : 0
+                );
+                items.put(entry);
+            } catch (JSONException ignored) {
+            }
+        }
         saveQueue(
             items,
-            activeMediaId,
+            currentMediaId(),
             player.getCurrentPosition(),
             player.getPlayWhenReady()
         );
-        notifyLibraryChanged(newItems.size());
-        notifyState();
     }
 
     private List<MediaItem> buildMediaItems(JSONArray items) {
@@ -581,9 +769,20 @@ public class PlaybackService extends MediaLibraryService {
     }
 
     private void notifyLibraryChanged(int itemCount) {
-        if (session != null) {
-            session.notifyChildrenChanged(ROOT_ID, itemCount, null);
+        if (session == null) {
+            return;
         }
+        StringBuilder signature = new StringBuilder();
+        for (int i = 0; i < player.getMediaItemCount(); i++) {
+            signature.append(player.getMediaItemAt(i).mediaId).append('|');
+        }
+        signature.append(itemCount);
+        String value = signature.toString();
+        if (value.equals(lastLibrarySignature)) {
+            return;
+        }
+        lastLibrarySignature = value;
+        session.notifyChildrenChanged(ROOT_ID, itemCount, null);
     }
 
     private void notifyState() {
@@ -689,16 +888,22 @@ public class PlaybackService extends MediaLibraryService {
                 }
             }
             notifyState();
+            pushPlaybackStateToServer(true);
+            maybeRefillFromServer();
         }
 
         @Override
         public void onIsPlayingChanged(boolean isPlaying) {
             notifyState();
+            pushPlaybackStateToServer(true);
         }
 
         @Override
         public void onPlaybackStateChanged(int playbackState) {
             notifyState();
+            if (playbackState == Player.STATE_ENDED) {
+                pushPlaybackStateToServer();
+            }
         }
 
         @Override
@@ -770,18 +975,399 @@ public class PlaybackService extends MediaLibraryService {
             MediaSession.ControllerInfo browser,
             String mediaId
         ) {
-            for (int i = 0; i < player.getMediaItemCount(); i++) {
-                MediaItem item = player.getMediaItemAt(i);
-                if (item.mediaId.equals(mediaId)) {
-                    return Futures.immediateFuture(
-                        LibraryResult.ofItem(item, null)
-                    );
-                }
+            MediaItem item = findMediaItem(mediaId);
+            if (item != null) {
+                return Futures.immediateFuture(
+                    LibraryResult.ofItem(item, null)
+                );
             }
             return Futures.immediateFuture(
                 LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
             );
         }
+
+        @Override
+        public ListenableFuture<List<MediaItem>> onAddMediaItems(
+            MediaSession mediaSession,
+            MediaSession.ControllerInfo controller,
+            List<MediaItem> mediaItems
+        ) {
+            return Futures.immediateFuture(resolveMediaItems(mediaItems));
+        }
+
+        @Override
+        public ListenableFuture<MediaSession.MediaItemsWithStartPosition>
+            onSetMediaItems(
+                MediaSession mediaSession,
+                MediaSession.ControllerInfo controller,
+                List<MediaItem> mediaItems,
+                int startIndex,
+                long startPositionMs
+            ) {
+            List<MediaItem> resolved = resolveMediaItems(mediaItems);
+            if (resolved.isEmpty()) {
+                return Futures.immediateFuture(
+                    new MediaSession.MediaItemsWithStartPosition(
+                        resolved,
+                        0,
+                        Math.max(0, startPositionMs)
+                    )
+                );
+            }
+
+            List<MediaItem> playlist = currentPlaylist();
+            if (playlist.isEmpty()) {
+                playlist = resolved;
+            } else if (resolved.size() == 1) {
+                String selectedId = resolved.get(0).mediaId;
+                int selectedIndex = indexOfMediaId(playlist, selectedId);
+                if (selectedIndex == -1) {
+                    playlist.add(resolved.get(0));
+                    selectedIndex = playlist.size() - 1;
+                }
+                return Futures.immediateFuture(
+                    new MediaSession.MediaItemsWithStartPosition(
+                        playlist,
+                        selectedIndex,
+                        Math.max(0, startPositionMs)
+                    )
+                );
+            } else {
+                playlist = resolved;
+            }
+
+            int index = Math.max(
+                0,
+                Math.min(startIndex, playlist.size() - 1)
+            );
+            return Futures.immediateFuture(
+                new MediaSession.MediaItemsWithStartPosition(
+                    playlist,
+                    index,
+                    Math.max(0, startPositionMs)
+                )
+            );
+        }
+
+        @Override
+        public ListenableFuture<MediaSession.MediaItemsWithStartPosition>
+            onPlaybackResumption(
+                MediaSession mediaSession,
+                MediaSession.ControllerInfo controller
+            ) {
+            List<MediaItem> playlist = currentPlaylist();
+            if (playlist.isEmpty()) {
+                return Futures.immediateFuture(null);
+            }
+            int index = Math.max(
+                0,
+                player.getCurrentMediaItemIndex()
+            );
+            long positionMs = preferences != null
+                ? preferences.getLong(KEY_POSITION_MS, 0)
+                : 0;
+            return Futures.immediateFuture(
+                new MediaSession.MediaItemsWithStartPosition(
+                    playlist,
+                    index,
+                    Math.max(0, positionMs)
+                )
+            );
+        }
+
+        private List<MediaItem> resolveMediaItems(
+            List<MediaItem> requested
+        ) {
+            List<MediaItem> resolved = new ArrayList<>();
+            for (MediaItem requestedItem : requested) {
+                MediaItem known = findMediaItem(requestedItem.mediaId);
+                if (known != null) {
+                    resolved.add(known);
+                } else if (requestedItem.localConfiguration != null) {
+                    resolved.add(requestedItem);
+                }
+            }
+            return resolved;
+        }
+
+        private MediaItem findMediaItem(String mediaId) {
+            if (mediaId == null || mediaId.isEmpty()) {
+                return null;
+            }
+            for (int i = 0; i < player.getMediaItemCount(); i++) {
+                MediaItem item = player.getMediaItemAt(i);
+                if (item.mediaId.equals(mediaId)) {
+                    return item;
+                }
+            }
+            return null;
+        }
+
+        private List<MediaItem> currentPlaylist() {
+            List<MediaItem> playlist = new ArrayList<>();
+            for (int i = 0; i < player.getMediaItemCount(); i++) {
+                playlist.add(player.getMediaItemAt(i));
+            }
+            return playlist;
+        }
+    }
+
+    private String baseUrl() {
+        if (preferences == null) {
+            return DEFAULT_BASE_URL;
+        }
+        String configured = preferences.getString(
+            SERVER_URL_KEY,
+            DEFAULT_BASE_URL
+        );
+        return configured == null || configured.isEmpty()
+            ? DEFAULT_BASE_URL
+            : configured.replaceAll("/+$", "");
+    }
+
+    private JSONObject getJson(String path) throws IOException, JSONException {
+        if (httpClient == null) {
+            return null;
+        }
+        Request request = new Request.Builder()
+            .url(baseUrl() + path)
+            .get()
+            .build();
+        try (Response response = httpClient.newCall(request).execute()) {
+            Log.i(TAG, "GET " + path + " -> " + response.code());
+            if (!response.isSuccessful() || response.body() == null) {
+                return null;
+            }
+            return new JSONObject(response.body().string());
+        }
+    }
+
+    private JSONObject postJson(
+        String path,
+        String csrfToken,
+        String payload
+    ) throws IOException, JSONException {
+        if (httpClient == null) {
+            return null;
+        }
+        Request request = new Request.Builder()
+            .url(baseUrl() + path)
+            .header("X-CSRF-Token", csrfToken)
+            .post(RequestBody.create(payload, JSON_TYPE))
+            .build();
+        try (Response response = httpClient.newCall(request).execute()) {
+            Log.i(TAG, "POST " + path + " -> " + response.code());
+            if (!response.isSuccessful() || response.body() == null) {
+                return null;
+            }
+            return new JSONObject(response.body().string());
+        }
+    }
+
+    private String fetchCsrfToken() throws IOException, JSONException {
+        JSONObject me = getJson("/api/auth/me");
+        String token = me != null ? me.optString("csrf_token", "") : "";
+        Log.i(TAG, "CSRF token length=" + token.length());
+        return token;
+    }
+
+    private void refreshServerQueue(boolean refill) {
+        if (player == null || queueRequestInFlight) {
+            return;
+        }
+        queueRequestInFlight = true;
+        queueExecutor.execute(() -> {
+            try {
+                String csrfToken = fetchCsrfToken();
+                if (csrfToken.isEmpty()) {
+                    return;
+                }
+                JSONObject state = null;
+                if (refill) {
+                    state = postJson("/api/queue/refill", csrfToken, "{}");
+                }
+                if (state == null) {
+                    state = getJson("/api/queue");
+                }
+                if (state == null) {
+                    return;
+                }
+                List<MediaItem> items = parseServerQueueItems(
+                    state.optJSONArray("items")
+                );
+                Log.i(
+                    TAG,
+                    "Server queue items=" +
+                        items.size() +
+                        " refill=" +
+                        refill
+                );
+                if (items.isEmpty()) {
+                    return;
+                }
+                String currentId = state.optString("current_item_id", "");
+                long positionMs = Math.max(
+                    0,
+                    state.optInt("position_seconds", 0) * 1000L
+                );
+                mainHandler.post(
+                    () -> applyServerQueue(items, currentId, positionMs)
+                );
+            } catch (Exception error) {
+                Log.w(TAG, "Could not refresh queue from server", error);
+            } finally {
+                queueRequestInFlight = false;
+            }
+        });
+    }
+
+    private void applyServerQueue(
+        List<MediaItem> items,
+        String serverCurrentId,
+        long serverPositionMs
+    ) {
+        if (player == null || items.isEmpty()) {
+            return;
+        }
+        String nativeCurrentId = currentMediaId();
+        boolean nativeCurrentExists =
+            indexOfMediaId(items, nativeCurrentId) >= 0;
+        if (!player.isPlaying() && !nativeCurrentExists) {
+            int index = indexOfMediaId(items, serverCurrentId);
+            if (index == -1) {
+                index = 0;
+            }
+            player.setMediaItems(
+                items,
+                index,
+                Math.max(0, serverPositionMs)
+            );
+            player.setPlayWhenReady(false);
+            saveQueueFromPlayer();
+            notifyLibraryChanged(items.size());
+            notifyState();
+            return;
+        }
+
+        mergeQueuePreservingCurrent(items);
+        saveQueueFromPlayer();
+        if (!player.isPlaying()) {
+            notifyLibraryChanged(player.getMediaItemCount());
+        }
+        notifyState();
+    }
+
+    private List<MediaItem> parseServerQueueItems(JSONArray items) {
+        List<MediaItem> mediaItems = new ArrayList<>();
+        if (items == null) {
+            return mediaItems;
+        }
+        String base = baseUrl();
+        for (int i = 0; i < items.length(); i++) {
+            JSONObject item = items.optJSONObject(i);
+            if (item == null || !"ready".equals(item.optString("status"))) {
+                continue;
+            }
+            JSONObject track = item.optJSONObject("track");
+            if (track == null || !track.optBoolean("is_available", true)) {
+                continue;
+            }
+            String queueItemId = item.optString("id", "");
+            String trackId = track.optString("id", "");
+            if (queueItemId.isEmpty() || trackId.isEmpty()) {
+                continue;
+            }
+            String version = track.optString("stream_version", "");
+            String streamUrl = base + "/api/tracks/" + trackId + "/stream";
+            if (!version.isEmpty()) {
+                streamUrl += "?v=" + Uri.encode(version);
+            }
+            String title = track.optString("title", "Soundroom");
+            String artist = track.optString("artist_name", "");
+            String album = track.optString("album_title", "");
+            long durationMs = Math.max(
+                0,
+                track.optLong("duration_seconds", 0) * 1000L
+            );
+            MediaMetadata metadata = new MediaMetadata.Builder()
+                .setTitle(title)
+                .setArtist(artist)
+                .setAlbumTitle(album)
+                .setArtworkUri(
+                    Uri.parse(
+                        "android.resource://" +
+                            getPackageName() +
+                            "/drawable/media_artwork"
+                    )
+                )
+                .setIsBrowsable(false)
+                .setIsPlayable(true)
+                .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
+                .build();
+            mediaItems.add(
+                new MediaItem.Builder()
+                    .setMediaId(queueItemId)
+                    .setUri(Uri.parse(streamUrl))
+                    .setMediaMetadata(metadata)
+                    .build()
+            );
+        }
+        return mediaItems;
+    }
+
+    private void pushPlaybackStateToServer() {
+        pushPlaybackStateToServer(false);
+    }
+
+    private void pushPlaybackStateToServer(boolean force) {
+        if (player == null) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (!force && now - lastServerSyncAt < 2000) {
+            return;
+        }
+        lastServerSyncAt = now;
+        String currentId = currentMediaId();
+        if (currentId.isEmpty()) {
+            return;
+        }
+        boolean isPlaying = player.getPlayWhenReady();
+        long positionSeconds = Math.max(0, player.getCurrentPosition()) / 1000;
+        queueExecutor.execute(() -> {
+            try {
+                String csrfToken = fetchCsrfToken();
+                if (csrfToken.isEmpty()) {
+                    return;
+                }
+                JSONObject payload = new JSONObject();
+                payload.put("current_item_id", currentId);
+                payload.put("is_playing", isPlaying);
+                payload.put("position_seconds", positionSeconds);
+                postJson("/api/queue/state", csrfToken, payload.toString());
+            } catch (Exception error) {
+                Log.w(TAG, "Could not push playback state", error);
+            }
+        });
+    }
+
+    private void maybeRefillFromServer() {
+        if (player == null) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now - lastRefillAt < 10000) {
+            return;
+        }
+        int remaining =
+            player.getMediaItemCount() -
+            player.getCurrentMediaItemIndex() -
+            1;
+        if (remaining > 2) {
+            return;
+        }
+        lastRefillAt = now;
+        refreshServerQueue(true);
     }
 
     private static final class WebViewCookieJar implements CookieJar {

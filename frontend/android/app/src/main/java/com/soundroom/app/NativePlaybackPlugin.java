@@ -66,11 +66,15 @@ public class NativePlaybackPlugin extends Plugin {
         boolean playWhenReady = Boolean.TRUE.equals(
             call.getBoolean("playWhenReady", false)
         );
+        boolean forceCurrent = Boolean.TRUE.equals(
+            call.getBoolean("forceCurrent", false)
+        );
         PlaybackService.updateQueue(
             items != null ? items : new JSONArray(),
             currentMediaId,
             positionMs,
-            playWhenReady
+            playWhenReady,
+            forceCurrent
         );
         call.resolve();
     }

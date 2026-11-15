@@ -201,6 +201,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const wasSignedInRef = useRef(false);
   const nativePlayback = isNativePlaybackAvailable();
   const nativeQueueSignatureRef = useRef("");
+  const nativePlayTokenRef = useRef(0);
   const nativeEndedHandledRef = useRef(false);
   const nativeInitializedRef = useRef(false);
   const [nativeReady, setNativeReady] = useState(false);
@@ -256,8 +257,27 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         lastAppliedRevisionRef.current,
         queueState.revision,
       );
-      if (queueState.current_item_id !== lastHydratedCurrentRef.current) {
-        lastHydratedCurrentRef.current = queueState.current_item_id;
+      let currentQueueItemId = queueState.current_item_id;
+      let isPlaying = queueState.is_playing;
+      let tracks = queueState.items.map(queueItemToPlayerTrack);
+      if (nativePlayback && !applyPlayback) {
+        const snapshot = stateRef.current;
+        const active = snapshot.queue[snapshot.currentIndex];
+        if (active?.queue_item_id) {
+          currentQueueItemId = active.queue_item_id;
+          isPlaying = snapshot.isPlaying;
+          if (
+            !tracks.some(
+              (track) =>
+                track.queue_item_id === active.queue_item_id,
+            )
+          ) {
+            tracks = [...tracks, active];
+          }
+        }
+      }
+      if (currentQueueItemId !== lastHydratedCurrentRef.current) {
+        lastHydratedCurrentRef.current = currentQueueItemId;
         resumePositionRef.current = Math.max(
           0,
           queueState.position_seconds,
@@ -266,14 +286,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       queryClient.setQueryData(["queue"], queueState);
       dispatch({
         type: "hydrate",
-        tracks: queueState.items.map(queueItemToPlayerTrack),
-        currentQueueItemId: queueState.current_item_id,
-        isPlaying: queueState.is_playing,
+        tracks,
+        currentQueueItemId,
+        isPlaying,
         applyPlayback,
       });
       setRadioExhausted(queueState.radio_exhausted);
     },
-    [queryClient],
+    [nativePlayback, queryClient],
   );
 
   const beginQueueMutation = useCallback(() => {
@@ -484,14 +504,21 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     if (currentIndex === -1) {
       return;
     }
+    const forceCurrent =
+      snapshot.playToken !== nativePlayTokenRef.current;
     void updateNativeQueue(
       items,
       current.queue_item_id as string,
       snapshot.currentTime,
       snapshot.isPlaying,
-    ).catch(() => {
-      nativeQueueSignatureRef.current = "";
-    });
+      forceCurrent,
+    )
+      .then(() => {
+        nativePlayTokenRef.current = snapshot.playToken;
+      })
+      .catch(() => {
+        nativeQueueSignatureRef.current = "";
+      });
   }, [
     nativePlayback,
     nativeReady,
@@ -1486,16 +1513,21 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       if (nativeState.ended) {
         if (!nativeEndedHandledRef.current) {
           nativeEndedHandledRef.current = true;
-          void runQueueMutation(
-            () => advanceServerQueue("next"),
-            true,
-          ).catch(() => undefined);
+          const current =
+            stateRef.current.queue[stateRef.current.currentIndex];
+          if (current?.queue_item_id) {
+            void updateQueueState({
+              current_item_id: current.queue_item_id,
+              is_playing: false,
+              position_seconds: Math.round(nativeState.duration),
+            }).catch(() => undefined);
+          }
         }
       } else {
         nativeEndedHandledRef.current = false;
       }
     },
-    [runQueueMutation],
+    [],
   );
 
   const handleNativeItemChanged = useCallback(

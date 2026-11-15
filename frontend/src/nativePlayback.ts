@@ -51,6 +51,7 @@ interface NativePlaybackPlugin {
     currentMediaId: string;
     position: number;
     playWhenReady: boolean;
+    forceCurrent?: boolean;
   }) => Promise<void>;
   play: () => Promise<void>;
   pause: () => Promise<void>;
@@ -104,12 +105,14 @@ export async function updateNativeQueue(
   currentMediaId: string,
   position: number,
   playWhenReady: boolean,
+  forceCurrent = false,
 ): Promise<void> {
   await getNativePlaybackPlugin()?.updateQueue({
     items,
     currentMediaId,
     position,
     playWhenReady,
+    forceCurrent,
   });
 }
 
